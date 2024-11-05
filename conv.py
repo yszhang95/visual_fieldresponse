@@ -1,5 +1,6 @@
 import scipy
 import numpy as np
+import tensorflow as tf
 
 def conv1d(a, b):
     '''
@@ -139,6 +140,41 @@ def conv3d_scipy_valid(a, b):
 
     return d
 
+def conv3d_tf(a, b):
+    
+    X = a
+    F = b[::-1,::-1,::-1]
+    # Convert X and F to TensorFlow tensors and reshape for 3D convolution
+    X_tf = tf.convert_to_tensor(X, dtype=tf.float32)
+    # Shape (batch, depth, height, width, channels)
+    X_tf = tf.reshape(X_tf, (1, 3, 3, 3, 1))  
+
+    # Shape (filter_depth, filter_height, filter_width,
+    # in_channels, out_channels)
+    F_tf = tf.convert_to_tensor(F, dtype=tf.float32)
+    F_tf = tf.reshape(F_tf, (2, 2, 2, 1, 1))
+
+    # Calculate the necessary padding for "full" convolution
+    padding_d = F.shape[0] - 1  # Depth padding
+    padding_h = F.shape[1] - 1  # Height padding
+    padding_w = F.shape[2] - 1  # Width padding
+
+    # Apply padding to the input tensor
+    X_tf_padded = tf.pad(X_tf, [[0, 0],  # No padding for batch dimension
+                                [padding_d, padding_d],  # Depth padding
+                                [padding_h, padding_h],  # Height padding
+                                [padding_w, padding_w],  # Width padding
+                                [0, 0]])  # No padding for channels
+
+    # Perform 3D convolution in TensorFlow with "VALID" padding
+    y_tf = tf.nn.conv3d(X_tf_padded, F_tf,
+                        strides=[1, 1, 1, 1, 1], padding="VALID")
+
+    # Remove extra dimensions to get a 3D result
+    y_tf_squeezed = tf.squeeze(y_tf)
+
+    return y_tf_squeezed
+
 def rebin_by_sum(X, k):
     '''
     X.shape must be (, km * M, kn * N)
@@ -187,6 +223,7 @@ if __name__ == '__main__':
     print('conv3d_padzero', conv3d_padzero(X, F))
     print('conv3d_scipy', conv3d_scipy(X, F))
     print('conv3d_scipy_valid', conv3d_scipy(X, F))
+    print('conv3d_tf', conv3d_tf(X, F))
 
     X = np.arange(0, 4*4*2).reshape(4, 4, 2)
     print('input X', X)
