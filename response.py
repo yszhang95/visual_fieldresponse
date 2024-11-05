@@ -20,11 +20,11 @@ class PixelPlotter():
         vmin = np.min(pixels)
         vmax = np.max(pixels)
 
-        d = vmax - vmin
-        d10percent = 0.1 * d
+        # d = vmax - vmin
+        # d10percent = 0.1 * d
 
-        vmin = vmin - d10percent
-        vmax = vmax + d10percent
+        # vmin = vmin - d10percent
+        # vmax = vmax + d10percent
 
         fig, ax = plt.subplots()
 
@@ -86,19 +86,43 @@ class FieldResponse(Response):
         rx, ry, rt = self.response.shape
         sx, sy, st = self.signal.shape
 
-        result = result[:,:, rt-1:]
+        result = result[rx//2:sx+rx//2,ry//2:sx+ry//2, rt-1:]
         return result
 
 class PixelResponse(Response):
     def __init__(self):
-        pass
-    def load_signal(self):
-        pass
+        self.signal = None
+        self.k = None
+    def load_signal(self, signal):
+        self.signal = signal
     def _load_response(self):
         pass
+    def kdivision(self, k):
+        self.k = k
     def output(self):
-        pass
+        def rebin_by_sum(X, k):
+            '''
+            X.shape must be (, km * M, kn * N)
+            k: integer or (km, kn)
+            '''
+            if isinstance(k, int):
+                km = k
+                kn = k
+            else:
+                km, kn = k
+            Mk = X.shape[-2]
+            Nk = X.shape[-1]
+            M = Mk // km
+            N = Nk // kn
+            axm = len(X.shape) - 2 + 1
+            axn = len(X.shape) - 2 + 3
+            y = X.reshape([X.shape[0], M, km, N, kn]).sum(axis=(axm, axn))
+            return y
 
+        X = np.transpose(self.signal, axes=(2, 0, 1))
+        X = rebin_by_sum(X, self.k)
+        X = np.transpose(X, axes=(1, 2, 0))
+        return X
 
 class ElectronicResponse(Response):
     def __init__(self):
@@ -143,8 +167,8 @@ if __name__ == '__main__':
     qshape = QShape()
     # tpos = 1999, meaning the start of field response in the example
     # small tpos means closer to anode
-    point_q_pxls = qshape.point_charge(tpos=1999)
-    hline_q_pxls = qshape.horizontal_line()
+    point_q_pxls = qshape.point_charge(Q=410, tpos=1999)
+    hline_q_pxls = qshape.horizontal_line(tpos=1999)
 
     # plotter.plot_pixel(point_q_pxls, oname='point_q.gif')
     # plotter.plot_pixel(hline_q_pxls, oname='hline_q.gif')
@@ -153,18 +177,30 @@ if __name__ == '__main__':
     fr.load_response_npz('response_44_v2a_100ns.npy')
 
     fr.load_signal(point_q_pxls)
-
     point_q_r = fr.output()
-
+    fr.load_signal(hline_q_pxls)
+    hline_q_r = fr.output()
 
     plotter = PixelPlotter()
     plotter.plot_pixel(fr.response, oname='fr.gif',
                        frames=range(1700, 2000))
     plotter.plot_pixel(point_q_r, oname='point_q_r.gif',
                        frames=range(1700, 2500))
+    plotter.plot_pixel(point_q_r, oname='point_q_r.gif',
+                       frames=range(1700, 2500))
 
-    # print(type(fr.response))
-    # print(np.argwhere[fr.response>1])
-    # print(point_q_r[point_q_r>1])
-    # print(fr.response[fr.response>1])
-    # print(np.argwhere(point_q_r>1))
+
+    pixelbin = PixelResponse()
+    pixelbin.kdivision(10)
+    pixelbin.load_signal(point_q_r)
+    point_q_bin_r = pixelbin.output()
+    pixelbin.load_signal(hline_q_r)
+    hline_q_bin_r = pixelbin.output()
+
+    plotter.plot_pixel(hline_q_r, oname='hline_q_r.gif',
+                       frames=range(1700, 2500))
+
+    plotter.plot_pixel(point_q_bin_r, oname='point_q_bin_r.gif',
+                       frames=range(1700, 2100))
+    plotter.plot_pixel(hline_q_bin_r, oname='hline_q_bin_r.gif',
+                       frames=range(1700, 2100))
