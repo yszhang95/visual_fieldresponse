@@ -96,6 +96,50 @@ class Qeff():
                 ), self.__w_grid_1d['t']
             )
 
+        self.__func = None
+
+
+    @property
+    def func(self):
+        return self.__func
+    @func.setter
+    def func(self, f):
+        if callable(f):
+            self.__func = f
+        else:
+            raise NotImplementedError("f must be callable.")
+
+    def create_qeff(self):
+        '''create Qeff'''
+        nx = len(self.__w_grid_1d['x'])
+        ny = len(self.__w_grid_1d['y'])
+        nt = len(self.__w_grid_1d['t'])
+
+        if self.__meshgrid:
+            qeff3d = self.__func(self.__gridpoints[0],
+                                 self.__gridpoints[1],
+                                 self.__gridpoints[2])
+            qeff3d = qeff3d * self.__w_grid_3d
+        else:
+            qeff3d = np.zeros([nx, ny, nt])
+            for i in range(nx):
+                for j in range(ny):
+                    for k in range(nt):
+                        x = self.__grid_1d['x'][i]
+                        y = self.__grid_1d['y'][j]
+                        t = self.__grid_1d['t'][k]
+                        qeff3d[i,j,k] = self.__func(x, y, t)
+            for i in range(self.__space['x'][2]-1):
+                for j in range(self.__space['y'][2]-1):
+                    for k in range(self.__space['t'][2]-1):
+                        block = qeff3d[i*self.__np:(i+1)*self.__np,
+                                       j*self.__np:(j+1)*self.__np,
+                                       k*self.__np:(k+1)*self.__np]
+                        qeff3d[i*self.__np:(i+1)*self.__np,
+                               j*self.__np:(j+1)*self.__np,
+                               k*self.__np:(k+1)*self.__np] = block * \
+                                   self.__w_grid_unit_block
+        return qeff3d
 
     @property
     def method(self):
@@ -259,10 +303,6 @@ class integrator():
     '''integrator'''
     pass
 
-# validate; integrating qeff * ii
-# what is the range?
-# most strict way is to integrate over all space of qeff
-
 if __name__ == '__main__':
     print("Running test")
     logging.basicConfig(level=logging.DEBUG)
@@ -270,8 +310,13 @@ if __name__ == '__main__':
     # validated
     # qeff = Qeff(xspace=(0, 1, 11), yspace=(2, 3, 11), tspace=(3, 4, 11),
     #             meshgrid=True, method='gauss_legendre_3')
+    # qeff = Qeff(xspace=(0, 1, 11), yspace=(2, 3, 11), tspace=(3, 4, 11),
+    #             meshgrid=True, method='gauss_legendre_2')
     qeff = Qeff(xspace=(0, 1, 11), yspace=(2, 3, 11), tspace=(3, 4, 11),
-                meshgrid=True, method='gauss_legendre_2')
+                meshgrid=True, method='gauss_legendre_4')
+    # qeff = Qeff(xspace=(0, 1, 11), yspace=(2, 3, 11), tspace=(3, 4, 11),
+    #             meshgrid=False, method='gauss_legendre_4')
+
     # qeff = Qeff(xspace=(0, 1, 11), yspace=(2, 3, 11), tspace=(3, 4, 11),
     #            meshgrid=False)
     # validated
@@ -281,3 +326,6 @@ if __name__ == '__main__':
     # validated
     # qeff._test_create_grid1d()
     # qeff._test_grid3d(0, 1, 2)
+
+    qeff.func = lambda x, y, t : x**3 * y**3 * t**3
+    print(np.sum(qeff.create_qeff()))
