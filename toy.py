@@ -6,15 +6,19 @@ import logging
 logger = logging.getLogger(__name__)
 
 def test_transpose_array():
-    x = np.arange(0, 3**3*2**3).reshape(3, 3, 3, 2, 2, 2)
-    y = np.transpose(x, (0,3, 1,4, 2,5)).reshape(3*2, 3*2, 3*2)
+    M = 3
+    N = 2
+    x = np.arange(0, N**3*M**3).reshape(M, M, M, N, N, N)
+    y = np.transpose(x, (0,3, 1,4, 2,5)).reshape(M*N, M*N, M*N)
     for i in range(x.shape[0]):
         for j in range(x.shape[1]):
             for k in range(x.shape[2]):
                 for l in range(x.shape[3]):
                     for m in range(x.shape[4]):
                         for n in range(x.shape[5]):
-                            d = x[i,j,k,l,m,n] - y[2*i+l,2*j+m,2*k+n]
+                            d = x[i,j,k,l,m,n] - y[x.shape[3]*i+l,
+                                                   x.shape[4]*j+m,
+                                                   x.shape[5]*k+n]
                             if np.abs(d) > 1E-6:
                                 print("distance > 1E-6", d)
 
