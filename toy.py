@@ -138,7 +138,7 @@ class Qeff():
                 ))
                 # assume equal spacing
                 step = np.abs(corners[1] - corners[0])
-                w_grid_1d[k] = np.tile(weights*step/2., self.__space[k][2])
+                w_grid_1d[k] = np.tile(weights*step/2., self.__space[k][2]-1)
                 w_grid_1d_unit[k] = w_grid_1d[k][0:self.__np]
         else:
             pass
