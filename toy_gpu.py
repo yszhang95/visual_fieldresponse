@@ -148,7 +148,6 @@ def test_Func():
                 d = output[i,j,k] - f(vi, vj, vk)
                 assert torch.abs(d) < 1E-6
 
-
 def test_QModel():
     func = QModel.create_QModel(X0=(0.4,2.4,3.4), X1=(0.6, 2.6, 3.6),
                               Sigmas=(0.05, 0.05, 0.05))
