@@ -172,7 +172,7 @@ def test_QModel():
 class Qeff():
     '''Qeff'''
     def __init__(self, xspace, yspace, tspace, meshgrid=False,
-                 method='gauss_legendre_4', initialize=False,
+                 method='gauss_legendre_4', flatten=False,
                  model=None):
         '''xspace, yspcae, tspace are tuples of three numbers
         defining the range and number of grid points along one dimension
@@ -204,7 +204,11 @@ class Qeff():
         if method == 'cube_corner':
             raise NotImplementedError("cube_corner not implemented.")
         elif 'gauss_legendre' in method[0:len('gauss_legendre')]:
-            self.__np = int(method[len('gauss_legendre')+1:])
+            self.__np = {
+                'x': int(method[len('gauss_legendre')+1:]) ,
+                'y': int(method[len('gauss_legendre')+1:]) ,
+                't': int(method[len('gauss_legendre')+1:])
+            }
         else:
             msg = (
                 f"Method {method} not supported. "
@@ -217,8 +221,11 @@ class Qeff():
 
         self.__method = method
 
-        self.__grid_1d, _, w_grid_1d_unit = self._create_grid1d()
-        self.__w_grid_unit_block = Qeff._create_weight_block(w_grid_1d_unit)
+        self.__sampling_1d = self._create_sampling_1d()
+        self.__w1d = self._create_w1d()
+        self.__w_grid_unit_block = Qeff._create_weight_block(self.__w1d)
+
+        self.__flatten = flatten
 
         self.__func = model # data  model
 
@@ -228,11 +235,29 @@ class Qeff():
 
     @func.setter
     def func(self, f):
+        # TBD
+        # to add a new
         if callable(f):
             self.__func = Func(f)
             self.__func.to('cuda')
         else:
             raise NotImplementedError('f must be callable')
+
+    # TBD
+    # interval is missing in the product
+    def _create_w1d(self):
+      '''1D weights with the size (L, M, N) for x, y, z
+      '''
+      w1d = {}
+      if self.__method == 'cube_corner':
+          raise NotImplementedError("cube_corner not implemented.")
+      elif 'gauss_legendre' in self.__method:
+          for k, n in self.__np.items():
+              roots, weights = sp.special.roots_legendre(n)
+              w1d[k] = torch.tensor(weights) * self.__gridspacing[k]/2
+      else:
+          raise NotImplementedError(f"{self.__method} not implemented.")
+      return w1d
 
     @staticmethod
     def _create_weight_block(w1d):
@@ -241,49 +266,57 @@ class Qeff():
         ny = len(w1d['y'])
         nt = len(w1d['t'])
         w3d = torch.zeros([nx, ny, nt])
-        for i in range(nx):
-            for j in range(ny):
-                for k in range(nt):
-                    w3d[i,j,k] = w1d['x'][i] * w1d['y'][j] * w1d['t'][k]
+        # better way
+        w3d = w1d['x'][:, None, None] * w1d['y'][None, :, None] * w1d['t'][None, None, :]
+        # for i in range(nx):
+        #     for j in range(ny):
+        #         for k in range(nt):
+        #             w3d[i,j,k] = w1d['x'][i] * w1d['y'][j] * w1d['t'][k]
         return w3d
 
 
-    def _create_grid1d(self):
-        '''create grid and corresponding weights in 1d.
-        weight grid a long 1d is useless
-        weight grid 1d in one cube is useful
+    def _create_sampling_1d(self):
+        '''create grid in 1d with a size of (L, I), (M, ).
         Note:
         1. A uniform spacing of cubes is assumed.
         2. (b-a)/2 of each interval is included in the weight
         '''
-        grid_1d = {}
-        w_grid_1d = None
-        w_grid_1d_unit = {}
+        sampling_1d = {}
         if self.__method == 'cube_corner':
             raise NotImplementedError("cube_corner not implemented.")
         elif 'gauss_legendre' in self.__method:
-            n = self.__np
-            roots, weights = sp.special.roots_legendre(n)
-            for k in ['x', 'y', 't']:
-                corners = torch.linspace(self.__space[k][0],
-                                         self.__space[k][1], self.__space[k][2])
-                # to be optimized
-                grid_1d[k] = torch.concatenate(list(
-                    (b-a)/2 * roots + (b+a)/2
-                    for (a, b) in zip(corners[:-1], corners[1:])
-                ))
-                # assume equal spacing
-                step = torch.abs(corners[1] - corners[0])
 
-                w_grid_1d_unit[k] = torch.tensor(weights)*step/2.
+            for k in ['x', 'y', 't']:
+                n = self.__np[k]
+                roots, weights = sp.special.roots_legendre(n)
+                start = self.__space[k][0]
+                end = self.__space[k][1]
+                npoints = self.__space[k][2]
+                corners = torch.linspace(start, end, npoints)
+
+                # to be optimized
+                half_delta = (corners[1:] - corners[:-1])/2. # npoints
+                avg = (corners[1:] + corners[:-1])/2. # npoints
+                sampling_1d[k] = half_delta[None, :] * roots[:, None] + avg[None, :] # (n, npoints)
+                # sampling_1d[k] = torch.concatenate(list(
+                #     (b-a)/2 * roots + (b+a)/2
+                #     for (a, b) in zip(corners[:-1], corners[1:])
+                # ))
+                # assume equal spacing
         else:
             pass
-        return grid_1d, w_grid_1d, w_grid_1d_unit
+        return sampling_1d
 
     def create_qeff_noweight(self):
         '''create Qeff without weights; output is 3D'''
-        qeff = self.__func(self.__grid_1d['x'], self.__grid_1d['y'],
-                           self.__grid_1d['t'])
+        x = self.__sampling_1d['x']
+        y = self.__sampling_1d['y']
+        t = self.__sampling_1d['t']
+        if self.__flatten:
+          x = x.view(x.shape[0] * x.shape[1])
+          y = y.view(y.shape[0] * y.shape[1])
+          t = t.view(t.shape[0] * t.shape[1])
+        qeff = self.__func(x, y, t)
         return qeff
 
     def create_qeff(self):
@@ -292,20 +325,22 @@ class Qeff():
         Mx = self.__space['x'][2]-1
         My = self.__space['y'][2]-1
         Mt = self.__space['t'][2]-1
-        Nx = self.__np
-        Ny = self.__np
-        Nt = self.__np
-        qeff = from3Dto6D(qeff, Mx, My, Mt, Nx, Ny, Nt)
+        Nx = self.__np['x']
+        Ny = self.__np['y']
+        Nt = self.__np['t']
+        qeff = from3Dto6D(qeff, Nx, Ny, Nt, Mx, My, Mt)
+        qeff = qeff.permute(3, 4, 5, 0, 1, 2)
         qeff = qeff*self.__w_grid_unit_block.view(1, 1, 1, Nx, Ny, Nt)
         qeff = from6Dto3D(qeff, Mx, My, Mt, Nx, Ny, Nt)
         return qeff
 
 if __name__ == '__main__':
-    test_transpose_array()
-    test_Func()
+    # test_transpose_array()
+    # test_Func()
     # qeff = Qeff(xspace=(0, 1, 11), yspace=(2, 3, 11), tspace=(3, 4, 11),
     #             meshgrid=True, method='gauss_legendre_4')
     qeff = Qeff(xspace=(0, 1, 11), yspace=(2, 3, 11), tspace=(3, 4, 11),
+                flatten=True,
                 meshgrid=False, method='gauss_legendre_4')
     qeff.func = lambda x, y, t : x**3 * y**3 * t**3
     print(torch.sum(qeff.create_qeff()))
