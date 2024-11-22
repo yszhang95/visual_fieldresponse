@@ -76,12 +76,21 @@ class Func(torch.nn.Module):
             raise NotImplementedError("TBD, add a default test function.")
         else:
             raise NotImplemented(f"Not supported for type {type(f)}")
-    def forward(self, x, y, t):
-        '''x, y, t are 1-d arrays before broadcasting
+
+    def forward(self, x, y, t, Y=None, Yslice=None):
+        '''x, y, t has been broadcasted
         '''
         with torch.no_grad():
-            return self._f(x[:, None, None],
-                           y[None, :, None], t[None, None, :])
+            x.to('cuda')
+            y.to('cuda')
+            t.to('cuda')
+            if Y is not None:
+                Y.to('cuda')
+                if Yslice is None:
+                    Yslice = slice(None)
+                Y[Yslice].copy_(self._f(x, y, t))
+            else:
+                return self._f(x, y, t)
 
     @property
     def f(self):
@@ -141,7 +150,7 @@ def test_Func():
     y = torch.linspace(1, 2, 2).to('cuda')
     z = torch.linspace(3, 4, 2).to('cuda')
     func = func.to('cuda')
-    output = func(x, y, z)
+    output = func(x[:, None, None], y[None, :, None], z[None, None, :])
     for i, vi in zip([0,1], [0,1]):
         for j, vj in zip([0,1], [1,2]):
             for k, vk in zip([0,1], [3,4]):
@@ -224,6 +233,8 @@ class Qeff():
         self.__sampling_1d = self._create_sampling_1d()
         self.__w1d = self._create_w1d()
         self.__w_grid_unit_block = Qeff._create_weight_block(self.__w1d)
+        self.__u1d = self._create_u1d()
+        self.__u_grid_unit_block = Qeff._create_u_block(self.__u1d)
 
         self.__flatten = flatten
 
@@ -235,16 +246,12 @@ class Qeff():
 
     @func.setter
     def func(self, f):
-        # TBD
-        # to add a new
         if callable(f):
             self.__func = Func(f)
             self.__func.to('cuda')
         else:
             raise NotImplementedError('f must be callable')
 
-    # TBD
-    # interval is missing in the product
     def _create_w1d(self):
       '''1D weights with the size (L, M, N) for x, y, z
       '''
@@ -259,6 +266,28 @@ class Qeff():
           raise NotImplementedError(f"{self.__method} not implemented.")
       return w1d
 
+    def _create_u1d(self):
+        '''1D weights for trilinear interpolation
+            with the size (L, M, N, 2, 2, 2) for x, y, z
+        '''
+        u1d = {}
+        if self.__method == 'cube_corner':
+            raise NotImplementedError("cube_corner not implemented.")
+
+        elif 'gauss_legendre' in self.__method:
+            for k, n in self.__np.items():
+                n = self.__np[k]
+                u1d[k] = torch.zeros([n, 2])
+                roots, _ = sp.special.roots_legendre(n)
+                roots = torch.tensor(roots)
+                u = (roots+1)/2
+                u1d[k][:, 0] = 1-u
+                u1d[k][:, 1] = u
+        else:
+          raise NotImplementedError(f"{self.__method} not implemented.")
+        return u1d
+
+
     @staticmethod
     def _create_weight_block(w1d):
         '''create a weight block'''
@@ -272,6 +301,16 @@ class Qeff():
         #     for j in range(ny):
         #         for k in range(nt):
         #             w3d[i,j,k] = w1d['x'][i] * w1d['y'][j] * w1d['t'][k]
+        return w3d
+
+    @staticmethod
+    def _create_u_block(u1d):
+        '''create a weight block for u'''
+        w3d = (
+            u1d['x'][:, None, None, :, None, None] *
+                u1d['y'][None, :, None, None, :, None] *
+                u1d['t'][None, None, :, None, None, :]
+        )
         return w3d
 
 
@@ -294,59 +333,94 @@ class Qeff():
                 npoints = self.__space[k][2]
                 corners = torch.linspace(start, end, npoints)
 
-                # to be optimized
                 half_delta = (corners[1:] - corners[:-1])/2. # npoints
                 avg = (corners[1:] + corners[:-1])/2. # npoints
                 sampling_1d[k] = half_delta[None, :] * roots[:, None] + avg[None, :] # (n, npoints)
-                # sampling_1d[k] = torch.concatenate(list(
-                #     (b-a)/2 * roots + (b+a)/2
-                #     for (a, b) in zip(corners[:-1], corners[1:])
-                # ))
-                # assume equal spacing
         else:
             pass
         return sampling_1d
 
-    def create_qeff_noweight(self):
-        '''create Qeff without weights; output is 3D'''
-        x = self.__sampling_1d['x']
-        y = self.__sampling_1d['y']
-        t = self.__sampling_1d['t']
+    def create_qeff_noweight(self, x=None, y=None, t=None, Y=None, Yslice=None):
+        '''create Qeff without weights; output is broadcasted; output is not squeezed'''
+        if x is None or y is None or t is None:
+            x = self.__sampling_1d['x']
+            y = self.__sampling_1d['y']
+            t = self.__sampling_1d['t']
+
         if self.__flatten:
-          x = x.view(x.shape[0] * x.shape[1])
-          y = y.view(y.shape[0] * y.shape[1])
-          t = t.view(t.shape[0] * t.shape[1])
-        qeff = self.__func(x, y, t)
-        return qeff
+            x = x.view(x.shape[0] * x.shape[1])
+            y = y.view(y.shape[0] * y.shape[1])
+            t = t.view(t.shape[0] * t.shape[1])
+            qeff = self.__func(x[:, None, None], y[None, :, None], t[None, None, :])
+            return qeff
+        else:
+            if Y is not None:
+                if Yslice is None:
+                    Yslice = slice(None)
+                self.__func(x[:, None, None, :, None, None],
+                            y[None, :, None, None, :, None],
+                            t[None, None, :, None, None, :],
+                            Y=Y, Yslice=Yslice)
+            else:
+                qeff = self.__func(x[:, None, None, :, None, None],
+                                   y[None, :, None, None, :, None],
+                                   t[None, None, :, None, None, :])
 
     def create_qeff(self):
-        '''create Qeff multiplied by weights'''
-        qeff = self.create_qeff_noweight()
+        '''create Qeff multiplied by weights; output is squeezed'''
         Mx = self.__space['x'][2]-1
         My = self.__space['y'][2]-1
         Mt = self.__space['t'][2]-1
         Nx = self.__np['x']
         Ny = self.__np['y']
         Nt = self.__np['t']
-        qeff = from3Dto6D(qeff, Nx, Ny, Nt, Mx, My, Mt)
-        qeff = qeff.permute(3, 4, 5, 0, 1, 2)
-        qeff = qeff*self.__w_grid_unit_block.view(1, 1, 1, Nx, Ny, Nt)
-        qeff = from6Dto3D(qeff, Mx, My, Mt, Nx, Ny, Nt)
+        Ux = self.__u1d['x']
+        Uy = self.__u1d['y']
+        Ut = self.__u1d['t']
+        if self.__flatten:
+            qeff = self.create_qeff_noweight()
+            qeff = from3Dto6D(qeff, Nx, Ny, Nt, Mx, My, Mt)
+            qeff = qeff.permute(3, 4, 5, 0, 1, 2)
+            qeff = qeff*self.__w_grid_unit_block.view(1, 1, 1, Nx, Ny, Nt)
+            qeff = from6Dto3D(qeff, Mx, My, Mt, Nx, Ny, Nt)
+        else:
+            qeff = torch.zeros([Nx, Ny, Nt, Mx+2, My+2, Mt+2]) # +2 for padding 0s
+            Yslice = (slice(None), slice(None), slice(None),
+                slice(1, -1), slice(1, -1), slice(1, -1)) # 1, -1 for excluding pads
+            self.create_qeff_noweight(Y=qeff, Yslice=Yslice)
+            # reverse u block so that we can cross correlate it with qeff
+            # Do I really need reverse? TBD
+            kernel = torch.flip(self.__u_grid_unit_block, [3, 4, 5])
+            kernel = kernel.view(Nx * Ny * Nt, 1, 2, 2, 2) # out_channel, in_channel/groups, R, S, T
+            qeff = qeff.view(1, Nx * Ny * Nt, Mx+2, My+2, Mt+2) # batch, channel, D1, D2, D3
+            qeff = torch.nn.functional.conv3d(qeff, kernel, padding='valid',
+                                              groups=Nx * Ny * Nt)
+
+            qeff = qeff.view(Nx, Ny, Nt, Mx+1, My+1, Mt+1)
+            qeff = qeff*self.__w_grid_unit_block.view(Nx, Ny, Nt, 1, 1, 1)
+            qeff = torch.sum(qeff, dim=[0, 1, 2])
         return qeff
 
 if __name__ == '__main__':
     # test_transpose_array()
-    # test_Func()
-    # qeff = Qeff(xspace=(0, 1, 11), yspace=(2, 3, 11), tspace=(3, 4, 11),
-    #             meshgrid=True, method='gauss_legendre_4')
+    test_Func()
+
     qeff = Qeff(xspace=(0, 1, 11), yspace=(2, 3, 11), tspace=(3, 4, 11),
                 flatten=True,
                 meshgrid=False, method='gauss_legendre_4')
     qeff.func = lambda x, y, t : x**3 * y**3 * t**3
     print(torch.sum(qeff.create_qeff()))
 
-    test_QModel()
+    # test_QModel()
 
     qeff.func = QModel.create_QModel(X0=(0.4,2.4,3.4), X1=(0.6, 2.6, 3.6),
                               Sigmas=(0.5, 0.5, 0.5))
     print(torch.sum(qeff.create_qeff()))
+
+    qeff = Qeff(xspace=(0, 1, 11), yspace=(2, 3, 11), tspace=(3, 4, 11),
+                flatten=False,
+                meshgrid=False, method='gauss_legendre_4')
+    qeff.func = lambda x, y, t : x**3 * y**3 * t**3
+    y = qeff.create_qeff()
+    print(y.shape)
+    print(torch.sum(y))
