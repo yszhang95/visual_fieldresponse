@@ -421,6 +421,13 @@ if __name__ == '__main__':
                 flatten=False,
                 meshgrid=False, method='gauss_legendre_4')
     qeff.func = lambda x, y, t : x**3 * y**3 * t**3
-    y = qeff.create_qeff()
-    print(y.shape)
-    print(torch.sum(y))
+
+    ilinear = lambda x, y, t : x * y * t
+    x = np.linspace(0, 1, 11)
+    y = np.linspace(2, 3, 11)
+    t = np.linspace(3, 4, 11)
+    xgrid, ygrid, tgrid = np.meshgrid(x, y, t, indexing='ij')
+    I = torch.tensor(ilinear(xgrid, ygrid, tgrid))
+    Y = qeff.create_qeff()
+    print(torch.sum(Y))
+    print(torch.sum(Y * I))
