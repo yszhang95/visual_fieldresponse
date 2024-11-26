@@ -238,7 +238,14 @@ class Qeff():
 
         self.__flatten = flatten
 
-        self.__func = model # data  model
+        if isinstance(model, Func):
+            self.__func = model
+        elif callable(model) and not isinstance(model, torch.nn.Module):
+            self.__func = Func(model) # data  model
+        elif model is None:
+            pass
+        else:
+            raise NotImplementedError('f must be callable')
 
     @property
     def func(self):
@@ -246,7 +253,9 @@ class Qeff():
 
     @func.setter
     def func(self, f):
-        if callable(f):
+        if isinstance(f, Func):
+            self.__func = f
+        elif callable(f) and not isinstance(f, torch.nn.Module):
             self.__func = Func(f)
             self.__func.to('cuda')
         else:
@@ -399,6 +408,7 @@ class Qeff():
             qeff = qeff.view(Nx, Ny, Nt, Mx+1, My+1, Mt+1)
             qeff = qeff*self.__w_grid_unit_block.view(Nx, Ny, Nt, 1, 1, 1)
             qeff = torch.sum(qeff, dim=[0, 1, 2])
+            qeff.to('cpu')
         return qeff
 
 if __name__ == '__main__':
