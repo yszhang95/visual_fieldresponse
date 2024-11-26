@@ -270,7 +270,7 @@ class Qeff():
       elif 'gauss_legendre' in self.__method:
           for k, n in self.__np.items():
               roots, weights = sp.special.roots_legendre(n)
-              w1d[k] = torch.tensor(weights) * self.__gridspacing[k]/2
+              w1d[k] = torch.tensor(weights, dtype=torch.float32) * self.__gridspacing[k]/2
       else:
           raise NotImplementedError(f"{self.__method} not implemented.")
       return w1d
@@ -399,14 +399,14 @@ class Qeff():
             self.create_qeff_noweight(Y=qeff, Yslice=Yslice)
             # reverse u block so that we can cross correlate it with qeff
             # Do I really need reverse? TBD
-            kernel = torch.flip(self.__u_grid_unit_block, [3, 4, 5])
+            kernel = self.__u_grid_unit_block * self.__w_grid_unit_block.view(Nx, Ny, Nt, 1, 1, 1)
+            kernel = torch.flip(kernel, [3, 4, 5])
             kernel = kernel.view(Nx * Ny * Nt, 1, 2, 2, 2) # out_channel, in_channel/groups, R, S, T
             qeff = qeff.view(1, Nx * Ny * Nt, Mx+2, My+2, Mt+2) # batch, channel, D1, D2, D3
             qeff = torch.nn.functional.conv3d(qeff, kernel, padding='valid',
                                               groups=Nx * Ny * Nt)
 
             qeff = qeff.view(Nx, Ny, Nt, Mx+1, My+1, Mt+1)
-            qeff = qeff*self.__w_grid_unit_block.view(Nx, Ny, Nt, 1, 1, 1)
             qeff = torch.sum(qeff, dim=[0, 1, 2])
             qeff.to('cpu')
         return qeff
