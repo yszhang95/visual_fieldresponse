@@ -5,10 +5,25 @@ import scipy as sp
 
 import json
 
+def make_tensor(source, device, dtype=torch.float32):
+    '''Aliasing or create a tensor if not existing.
+    New tensor will be moved to the device
+    '''
+    if isinstance(source, torch.Tensor):
+        t = source
+        t.requires_grad = False
+        t.to(device)
+        if dtype != t.dtype:
+            raise ValueError(f'Wrong dtype given. The dtype of source is {t.dtype}')
+    else:
+        t = torch.tensor(source, dtype=dtype, requires_grad=False,
+                         device=device)
+    return t
+
 class UniversalGrid:
     """
     A class representing a universal grid in N dimensions. The grid is defined by its
-    origin and grid spacing along each dimension. 
+    origin and grid spacing along each dimension.
 
     This class supports operations such as converting between physical coordinates and grid
     indices, and it accommodates an optional origin offset for shifting the reference point.
@@ -20,7 +35,7 @@ class UniversalGrid:
         _origin (torch.Tensor): Physical coordinates of the grid's origin.
     """
 
-    def __init__(self, grid_spacing=None, origin=None):
+    def __init__(self, grid_spacing=None, origin=None, device='cpu'):
         """
         Initializes the grid using separate arrays for each dimension.
 
@@ -33,9 +48,11 @@ class UniversalGrid:
         Raises:
             NotImplementedError: If the provided origin is outside the minimum limits.
         """
-        
-        self._grid_spacing = torch.tensor(grid_spacing, dtype=torch.float32, requires_grad=False) if grid_spacing else None
-        self._origin = torch.tensor(origin, dtype=torch.float32, requires_grad=False) if origin else None
+        self._grid_spacing = torch.tensor(grid_spacing, device=device,
+                                          dtype=torch.float32, requires_grad=False) if grid_spacing else None
+        self._origin = torch.tensor(origin, device=device,
+                                    dtype=torch.float32, requires_grad=False) if origin else None
+        self._device = device
     @property
     def origin(self):
         return self._origin
@@ -45,25 +62,25 @@ class UniversalGrid:
         return self._grid_spacing
 
     @staticmethod
-    def compute_coordinate(idxs, spacing, origin):
+    def compute_coordinate(idxs, spacing, origin, device='cpu'):
         '''
         idxs : (N, vdim); index of grid point
         spacing : (vdim, )
         origin : (vdim,)
         return origin + spacing * idx
         '''
-        if not isinstance(idxs, torch.Tensor):
-            idxs = torch.tensor(idxs, dtype=torch.int64, requires_grad=False)
+        idxs = make_tensor(idxs, device=device, dtype=torch.int64)
         if len(idxs.shape) == 1:
             idxs = idxs.unsqueeze(0)
-        if not isinstance(origin, torch.Tensor):
-            origin = torch.tensor(origin, dtype=torch.float32, requires_grad=False)
+        origin = make_tensor(origin, device=device, dtype=torch.float32)
         if not isinstance(spacing, torch.Tensor):
-            spacing = torch.tensor(spacing, dtype=torch.float32, requires_grad=False)
+            spacing = torch.tensor(spacing, device=device,
+                                   dtype=torch.float32, requires_grad=False)
+        spacing = make_tensor(spacing, device=device, dtype=torch.float32)
         return origin.unsqueeze(0) + idxs * spacing.unsqueeze(0)
-        
+
     @staticmethod
-    def compute_index(coords, origin, spacing):
+    def compute_index(coords, origin, spacing, device='cpu'):
         '''
         spacing : (vdim, )
         coords : (N, vdim)
@@ -72,11 +89,13 @@ class UniversalGrid:
         return (coords - origin)/spacing, index of grid point
         '''
         if not isinstance(coords, torch.Tensor):
-            coords = torch.tensor(coords, dtype=torch.float32, requires_grad=False)
+            coords = torch.tensor(coords, device=device,
+                                  dtype=torch.float32, requires_grad=False)
         if len(coords.shape) == 1:
             coords = coords.unsqueeze(0)
         if not isinstance(origin, torch.Tensor):
-            origin = torch.tensor(origin, dtype=torch.float32, requires_grad=False)
+            origin = torch.tensor(origin, device=device,
+                                  dtype=torch.float32, requires_grad=False)
         if not isinstance(spacing, torch.Tensor):
             spacing = torch.tensor(spacing, dtype=torch.float32, requires_grad=False)
         idxs = (coords - origin.unsqueeze(0)) / spacing.unsqueeze(0)
@@ -87,7 +106,7 @@ class UniversalGrid:
         '''
         wraper
         '''
-        return UniversalGrid.compute_coordinate(idxs, self._grid_spacing, self._origin)
+        return UniversalGrid.compute_coordinate(idxs, self._grid_spacing, self._origin, self._device)
 
     def get_index(self, coords):
         """
@@ -101,7 +120,7 @@ class UniversalGrid:
         Returns:
             torch.Tensor: Grid indices (M, vdim).
         """
-        return UniversalGrid.compute_index(coords, self._origin, self._grid_spacing)
+        return UniversalGrid.compute_index(coords, self._origin, self._grid_spacing, self._device)
 
     def from_grid(self, grid_spacing, origin=None):
         '''
@@ -155,8 +174,7 @@ class LocalGrid:
         n_sigma: (vdim, )
         return : (N, vdim, 2)
         '''
-        if not isinstance(n_sigma, torch.Tensor):
-            n_sigma = torch.tensor(n_sigma, dtype=torch.float32, requires_grad=False)
+        n_sigma = make_tensor(n_sigma, dtype=torch.float32, device=Sigma.device)
         offset = (n_sigma.unsqueeze(0) * Sigma) # (N, vdim)
         min_limits = torch.min(X0X1, dim=2).values - offset # torch.min(shape(N,vdim,2)) --> shape(N, vdim)
         max_limits = torch.max(X0X1, dim=2).values + offset
@@ -198,7 +216,7 @@ class LocalGrid:
         universal_max = torch.max(shape, dim=0).values
 
         return universal_max
-    
+
     @staticmethod
     def compute_charge_box(X0, X1, Sigma, n_sigma, origin, grid_spacing, compare_key='index'):
         '''
@@ -227,7 +245,7 @@ class LocalGrid:
             raise NotImplementedError('Only support comparation by index and coordinate')
         return offset, shape
 
-    
+
     def compute_bounds(self, X0, X1, Sigma):
         """
         Compute the adjusted bounds for the grid.
@@ -274,6 +292,314 @@ class LocalGrid:
 class QModel():
     def __new__(cls, *args, **kwargs):
         raise TypeError("This class cannot be instantiated.")
+
+    @staticmethod
+    def compute_shape_2D(X0, X1, Sigma, n_sigma, tilt_min, tilt_max):
+        """
+        Compute the upper and lower bounds of the parallelepiped based on tilt and sigma.
+        X0, X1: Tensors defining bounding positions in the X/Y plane. (N, 2), float
+        Sigma: (N, 2)
+        n_sigma: (2, )
+        tilt_min: Scalar tensor indicating tilt value (>0, <0, or 0).
+        tilt_max: Scalar
+        N_sigma: Scalar tensor for diffusion approximation. (N, 2), float
+        return:
+        ref : (N, 2) : bottom-left corner; values can be negative
+        width : (N, )
+        height : (N, )
+        tilt : (N, )
+        """
+        tilt = (X1[:,1]-X0[:,1])/(X1[:,0]-X0[:,0]) # (N,); inf can be in the result
+
+        if not isinstance(n_sigma, torch.Tensor):
+            n_sigma = torch.tensor(n_sigma, dtype=torch.float32, requires_grad=False)
+
+        mask = (torch.abs(tilt) < tilt_max) & (torch.abs(tilt) >= tilt_min)
+        positive_mask = mask & (tilt >= 0)
+        negative_mask = mask & (tilt < 0)
+        N_sigma = n_sigma[None,:] * Sigma
+        nsx, nsy = [N_sigma[:,i] for i in range(2)] # (N, ), (N, )
+
+        minX0X1 = torch.min(X0, X1) # (N, 2); xmin, ymin; tilt > 0 , matched x, y; tilt < 0, mismatched x, y, i.e., (X0[0], X1[1]) or (X0[1], X1[0])
+        maxX0X1 = torch.max(X0, X1) # (N, 2);
+        width = maxX0X1[:,0] - minX0X1[:,0] + 2 * nsx# (N, )
+
+        dy = 2 * nsx * torch.abs(tilt) # (N,)
+
+        height = torch.where(
+            mask,
+            dy + 2 * nsy,
+            maxX0X1[:,1] - minX0X1[:,1] + 2 * nsy
+        )
+        ref = torch.where(
+            positive_mask,
+            minX0X1 - N_sigma - torch.stack([torch.zeros_like(dy), dy], dim=1),
+            torch.stack(
+                [minX0X1[:,0] - nsx,
+                 maxX0X1[:,1] - nsy], dim=1
+            )
+        )
+        if torch.sum(~mask).item() > 0:
+            ref[~mask] = (minX0X1 - N_sigma)[~mask]
+
+        return ref, width, height, tilt
+
+    @staticmethod
+    def compute_shape_2D_stacked(X0, X1, Sigma, n_sigma, tilt_min, tilt_max):
+        ref, width, height, tilt = QModel.compute_shape_2D(X0, X1, Sigma, n_sigma, tilt_min, tilt_max)
+        return torch.stack([ref[:,0], ref[:,1], width, height, tilt], dim=1)
+
+    @staticmethod
+    def mask2D(X0, X1, Sigma, n_sigma, tilt_min, tilt_max, origin, grid_spacing, box_offset, box_shape):
+        '''
+        X0, X1: Tensors defining start/end positions. (N, 2), float
+        Sigma: (N, 2)
+        n_sigma: (2, )
+        tilt_min: axis1 / axis0, Scalar tensor indicating tilt value (>0, <0, or 0).
+        tilt_max: Scalar
+        N_sigma: Scalar tensor for diffusion approximation. (N, 2), float
+        origin : (2,) float
+        grid_spacing : (2,) float
+        box_offset : (N,2), int
+        box_shape : (2,), int
+        '''
+        # tilt is height / width
+        # width maps to x, axis 0
+        # height maps to y, axis 1
+
+        ref, width, height, tilt = QModel.compute_shape_2D(X0, X1, Sigma, n_sigma, tilt_min, tilt_max)
+        start_x, start_y = ref[:,0], ref[:,1]
+
+
+        # historical swap...
+        cols = torch.arange(box_shape[0], dtype=torch.int32).unsqueeze(1) # (box_width, 1)
+        rows = torch.arange(box_shape[1], dtype=torch.int32).unsqueeze(0) # (1, box_height)
+
+        start = torch.stack([start_x, start_y], dim=1) # (N, 2)
+        local_startidx = UniversalGrid.compute_index(start, origin, grid_spacing) - box_offset # (N, 2)
+
+        tilt_mask = (torch.abs(tilt) < tilt_max) & (torch.abs(tilt) >= tilt_min)
+        print('tilt_mask', tilt_mask.shape)
+        print('local_startidx[:,0]', local_startidx[:,0].shape)
+        row_offsets_per_col = torch.where(
+            tilt_mask[:, None, None],
+            torch.clamp((cols.unsqueeze(0) - local_startidx[:,0][:, None, None]) * tilt[:, None, None] , min=0), # shape (N, box_width, 1)
+            0
+        )
+        row_starts_per_col = local_startidx[:,1][:, None, None] + row_offsets_per_col # shape (N, box_width, 1)
+        row_ends_per_col = row_starts_per_col + torch.ceil(height[:, None, None]/grid_spacing[1]) + 1 # shape (N, box_width, 1)
+        cols = cols.unsqueeze(0)
+        rows = rows.unsqueeze(0)
+        col_mask = (
+            (cols >= local_startidx[:,0][:,None,None])
+            & (cols < (local_startidx[:,0] + torch.floor(width/grid_spacing[0]))[:,None,None] + 1)
+        ) # (N, box_width, 1)
+        mask = (
+            (rows >= row_starts_per_col) & (rows < row_ends_per_col) & col_mask
+        )
+        return mask
+
+    def compute_shape_3D(X0, X1, Sigma, n_sigma, ax=(0,1,2), tilt_min=(1E-3,1E-3,1E-3), tilt_max=(1E3,1E3,1E3)):
+        '''
+        ax : tuple (3, )
+        tilt : ax[1]/ax[0], ax[2]/ax[0], ax[2]/ax[1]
+        '''
+        tilt = torch.stack(
+            [ (X1[:,ax[j]]-X0[:,ax[j]])/(X1[:,ax[i]]-X0[:,ax[i]])
+              for i, j in zip([0, 0, 1], [1, 2, 2])]
+        ) # tilt[3] will be recomputed according to the shape; as projection must be larger than the original area
+        if not isinstance(n_sigma, torch.Tensor):
+            n_sigma = torch.tensor(n_sigma, dtype=torch.float32, requires_grad=False)
+        if not isinstance(tilt_min, torch.Tensor):
+            tilt_min = torch.tensor(tilt_min, dtype=torch.float32,
+                                    requires_grad=False)
+        if not isinstance(tilt_max, torch.Tensor):
+            tilt_max = torch.tensor(tilt_max, dtype=torch.float32,
+                                        requires_grad=False)
+        N_sigma = n_sigma[None,:] * Sigma
+
+        condition = X0[:, ax[0]] < X1[:, ax[0]]  # Shape: (N,)
+        X0new = torch.where(condition.unsqueeze(1), X0, X1)
+        X1new = torch.where(condition.unsqueeze(1), X1, X0)
+        mask12 = ( # ax1/ax0, ax2/ax0
+            (torch.abs(tilt[0]) < tilt_max[0])  & (torch.abs(tilt[0]) >= tilt_min[0])
+            & (torch.abs(tilt[1]) < tilt_max[1])  & (torch.abs(tilt[1]) >= tilt_min[1])
+        )
+        # for a reasonable tilt[1], tilt[2]
+        # dax1 = tilt[1] * N_sigma[:,ax[0]] * 2 # (N, )
+        # dax2 = tilt[2] * N_sigma[:,ax[0]] * 2 # (N, )
+        dax1 = tilt[0] * N_sigma[:,ax[0]] * 2 # (N, )
+        dax2 = tilt[1] * N_sigma[:,ax[0]] * 2 # (N, )
+        X0new_ax12 = torch.stack([X0new[:, ax[1]], X0new[:, ax[2]]], dim=1)
+        X0new_shift_ax12 = X0new_ax12 - torch.stack([dax1, dax2], dim=1)
+        Sigma_ax12 = torch.stack([Sigma[:, ax[1]], Sigma[:, ax[2]]], dim=1)
+        n_sigma_ax12 = torch.tensor([n_sigma[ax[1]], n_sigma[ax[2]]])
+
+        X0_ax12 = torch.stack([X0[:, ax[1]], X0[:, ax[2]]], dim=1)
+        X1_ax12 = torch.stack([X1[:, ax[1]], X1[:, ax[2]]], dim=1)
+
+        stacked_2Dshape = torch.where(
+            mask12[:, None],
+            QModel.compute_shape_2D_stacked(X0new_shift_ax12, X0new_ax12, Sigma_ax12, n_sigma_ax12, tilt_min[2], tilt_max[2]), # (N, 5)
+            QModel.compute_shape_2D_stacked(X0_ax12, X1_ax12, Sigma_ax12, n_sigma_ax12, tilt_min[2], tilt_max[2]) # degenerated (N, 5)
+        )
+        ref_ax12 = stacked_2Dshape[:,:2]
+        width_ax12 = stacked_2Dshape[:,2]
+        height_ax12 = stacked_2Dshape[:,3]
+        tilt_ax12 = stacked_2Dshape[:,4]
+
+        ref_ax0 = X0new[:,ax[0]] - N_sigma[:,ax[0]]
+        depth_ax0 = X1new[:,ax[0]]-X0new[:,ax[0]] + 2 * N_sigma[:,ax[0]]
+        tilt_ax01 = tilt[0]
+        tilt_ax02 = tilt[1]
+        # further dealing with degeneracy for tilt_ax00, tilt_ax01 necessary
+        # missing tilt ax 12 degenerated?
+
+
+        return ref_ax0, ref_ax12, depth_ax0, width_ax12, height_ax12, tilt_ax01, tilt_ax02, tilt_ax12
+
+    @staticmethod
+    def mask3D(X0, X1, Sigma, n_sigma, tilt_min, tilt_max, origin, grid_spacing, box_offset, box_shape, **kwargs):
+        '''
+        X0, X1: Tensors defining start/end positions. (N, 3), float
+        Sigma: (N, 3)
+        n_sigma: (3, )
+        tilt_min: min of ax[1]/ax[0], ax[2]/ax[0], ax[2]/ax[1], tuple
+        tilt_max: min of ax[1]/ax[0], ax[2]/ax[0], ax[2]/ax[1], tuple
+        origin : (3,) float
+        grid_spacing : (3,) float
+        box_offset : (N, 3), int, in grid indexing
+        box_shape : (3,), int, range of array indexing
+
+        kwargs['ax'] = (0, 1, 2) or others
+        '''
+        device = X0.device
+        # tilt is height / width
+        # width maps to x, axis 0
+        # height maps to y, axis 1
+        ax = kwargs.get('ax', (0, 1, 2))
+        # ax0, ax[0], is just from min to max
+        # ax1, ax[1], is controlled by ax0
+        # ax2, ax[2], is controlled by ax0 and ax1
+        idxax0 = torch.arange(box_shape[ax[0]], dtype=torch.int32, device=device).unsqueeze(1).unsqueeze(2) # (box_depth, 1, 1)
+        idxax1 = torch.arange(box_shape[ax[1]], dtype=torch.int32, device=device).unsqueeze(0).unsqueeze(2) # (1, box_width, 1)
+        idxax2 = torch.arange(box_shape[ax[2]], dtype=torch.int32, device=device).unsqueeze(0).unsqueeze(1) # (1, 1, box_height)
+
+        tilt_min_ax01 = make_tensor(tilt_min[0], device=device)
+        tilt_min_ax02 = make_tensor(tilt_min[1], device=device)
+        tilt_min_ax12 = make_tensor(tilt_min[2], device=device)
+
+        tilt_max_ax01 = make_tensor(tilt_max[0], device=device)
+        tilt_max_ax02 = make_tensor(tilt_max[1], device=device)
+        tilt_max_ax12 = make_tensor(tilt_max[2], device=device)
+
+        # tilt_min_ax01 = torch.tensor(tilt_min[0], dtype=torch.float32, requires_grad=False, device=X0.device)
+        # tilt_min_ax02 = torch.tensor(tilt_min[1], dtype=torch.float32, requires_grad=False, device=X0.device)
+        # tilt_min_ax12 = torch.tensor(tilt_min[2], dtype=torch.float32, requires_grad=False, device=X0.device)
+
+        # tilt_max_ax01 = torch.tensor(tilt_max[0], dtype=torch.float32, requires_grad=False, device=X0.device)
+        # tilt_max_ax02 = torch.tensor(tilt_max[1], dtype=torch.float32, requires_grad=False, device=X0.device)
+        # tilt_max_ax12 = torch.tensor(tilt_max[2], dtype=torch.float32, requires_grad=False, device=X0.device)
+
+        ref_ax0, ref_ax12, depth_ax0, width_ax12, height_ax12, tilt_ax01, tilt_ax02, tilt_ax12 = QModel.compute_shape_3D(X0, X1, Sigma, n_sigma, ax, tilt_min, tilt_max)
+        start = [ref_ax0, ref_ax12[:,0], ref_ax12[:,1]] # (N, 3)
+        start = torch.stack([x for _, x in sorted(zip(ax, start))], dim=1)
+
+        local_array_startidx = UniversalGrid.compute_index(start, origin, grid_spacing) - box_offset # (N, 3) # array indices
+
+        tilt_mask12 = ( # ax1/ax0, ax2/ax0
+            (torch.abs(tilt_ax01) < tilt_max_ax01)  & (torch.abs(tilt_ax01) >= tilt_min_ax01)
+            & (torch.abs(tilt_ax02) < tilt_max_ax02)  & (torch.abs(tilt_ax02) >= tilt_min_ax02)
+        ) # (N, )
+        tilt_mask_ax12 = (
+            (torch.abs(tilt_ax12) < tilt_max_ax12) & (torch.abs(tilt_ax12) >= tilt_min_ax12)
+        )
+
+        # dax0 * tilt01 = dax1
+        # dax0 * tilt01 = dax2
+        # dax1 * tilt12 = dax2
+
+        idxax1_offset_per_ax0 = torch.where(tilt_mask12[:, None, None, None],  # (N, 1, 1, 1)
+                                            torch.clamp(tilt_ax01[:,None, None, None] *  (idxax0.unsqueeze(0) - local_array_startidx[:,ax[0]][:, None, None, None]),
+                                                        min=0) # (N, 1, 1, 1) * {(1, box_depth, 1, 1) - (N, 1, 1, 1)} --> (N, box_depth, 1, 1)
+                                            , 0) # (N, box_depth, 1, 1)
+
+        idxax2_offset_per_ax0_ax1 = torch.where(tilt_mask_ax12[:, None, None, None], # (N, 1, 1, 1)
+                                                torch.clamp(
+                                                    tilt_ax12[:,None, None, None] * (idxax1.unsqueeze(0) - local_array_startidx[:,ax[1]][:, None, None, None]) # (N, 1, 1, 1) * {(1, 1, box_width, 1) - (N, 1, 1, 1)} --> (N, 1, box_width, 1)
+                                                    , min=0), 0) # --> (N, box_depth, box_width, 1)
+
+        idxax1_start_per_ax0 = local_array_startidx[:,ax[1]][:, None, None, None] + idxax1_offset_per_ax0 # (N, 1, 1, 1) + (N, box_depth, 1, 1) --> (N, box_depth, 1, 1)
+        idxax1_start_per_ax0 = idxax1_start_per_ax0.clamp(min=0, max=box_shape[ax[1]]-1) # (N, box_depth, 1, 1)
+
+        idxax2_start_per_ax0_ax1 = local_array_startidx[:,ax[2]][:, None, None, None] + idxax2_offset_per_ax0_ax1 # (N, 1, 1, 1) + (N, box_depth, box_width, 1) --> (N, box_depth, box_width, 1)
+        idxax2_start_per_ax0_ax1 = idxax2_start_per_ax0_ax1.clamp(min=0, max=box_shape[ax[2]]-1) # (N, box_depth, box_width, 1)
+        idxax2_start_per_ax0_ax1 = torch.floor(idxax2_start_per_ax0_ax1)
+
+        idxax1_end_per_ax0 = idxax1_start_per_ax0 + torch.ceil(width_ax12[:, None, None, None]/grid_spacing[ax[1]]) + 1 + 1 # (N, box_depth, 1, 1) + (N, 1, 1, 1) --> (N, box_depth, 1, 1)
+        idxax2_end_per_ax0_ax1 = idxax2_start_per_ax0_ax1 + torch.ceil(height_ax12[:, None, None, None]/grid_spacing[ax[2]]) + 1 + 1# ((N, box_depth, box_width, 1) + (N, 1, 1, 1) --> (N, box_depth, box_width, 1)
+
+        # TBD; another reference
+        (_, ref_ax21, _,
+         width_ax21, height_ax21, _, _,
+         _) = QModel.compute_shape_3D(X0, X1, Sigma, n_sigma,
+                               (ax[0], ax[2], ax[1]),
+                               (tilt_min[0], tilt_min[2], tilt_min[1]),
+                               (tilt_max[0], tilt_max[2], tilt_max[1]))
+
+        idxax2_offset_per_ax0 = torch.where(
+            tilt_mask12[:, None, None, None],
+            torch.clamp(tilt_ax02[:,None, None, None] * (idxax0.unsqueeze(0) - local_array_startidx[:,ax[0]][:, None, None, None]) # (N, 1, 1, 1) * {(1, box_depth, 1, 1) - (N, 1, 1, 1)} --> (N, box_depth, 1, 1)
+        , min=0),
+        0
+        ) # (N, box_depth, 1, 1)
+
+        # TBD; another reference
+        start_ax21 = [ref_ax0, ref_ax21[:,0], ref_ax21[:,1]] # (N, 3)
+        start_ax21 = torch.stack([x for _, x in sorted(zip([ax[0], ax[2], ax[1]], start_ax21))], dim=1)
+        local_array_startidx_ax21 = UniversalGrid.compute_index(start_ax21, origin, grid_spacing) - box_offset # (N, 3) # array indices
+
+        idxax2_start_per_ax0 = local_array_startidx_ax21[:, ax[2]][:,None,None,None] + idxax2_offset_per_ax0
+        idxax2_start_per_ax0 = idxax2_start_per_ax0.clamp(min=0, max=box_shape[ax[2]]-1) # (N, box_depth, 1, 1)
+        idxax2_end_per_ax0 = idxax2_start_per_ax0 + torch.ceil(width_ax21[:, None, None, None]/grid_spacing[ax[2]]) + 1 +1 # (N, box_depth, 1, box_depth)
+
+        idxax0 = idxax0.unsqueeze(0)
+        idxax1 = idxax1.unsqueeze(0)
+        idxax2 = idxax2.unsqueeze(0)
+
+        if not isinstance(n_sigma, torch.Tensor):
+            n_sigma = torch.tensor(n_sigma)
+
+        minX0X1 = torch.min(X0, X1) - n_sigma.unsqueeze(0) * Sigma
+        maxX0X1 = torch.max(X0, X1) + n_sigma.unsqueeze(0) * Sigma
+        idxlw = UniversalGrid.compute_index(minX0X1, origin, grid_spacing) - box_offset
+        idxup = UniversalGrid.compute_index(maxX0X1, origin, grid_spacing) - box_offset + 1
+
+        idxax0_mask = (
+            (idxax0 >= local_array_startidx[:,ax[0]][:, None, None, None]) # (N, box_depth, 1, 1)
+            & (idxax0 < (torch.ceil(depth_ax0/grid_spacing[ax[0]]) + local_array_startidx[:,ax[0]] + 2)[:, None, None, None]) # (N, box_depth, 1, 1)
+
+        )
+        idxax1_mask = (
+            (idxax1 >= torch.floor(idxax1_start_per_ax0)) # (1, 1, box_width, 1) >= (N, box_depth, 1, 1) --> (N, box_depth, box_width, 1)
+            & (idxax1 < idxax1_end_per_ax0 + 1) # (1, 1, box_width, 1) < (N, box_depth, 1, 1) --> (N, box_depth, box_width, 1)
+            & (idxax1 >= idxlw[:,1][:, None, None, None])
+            & (idxax1 < idxup[:,1][:, None, None, None])
+        )
+        idxax2_mask = (
+            (idxax2 >= idxax2_start_per_ax0_ax1) # (1, 1, box_height) >= (N, box_depth, box_width, 1) --> (N, box_depth, box_width, box_height)
+            & (idxax2 < idxax2_end_per_ax0_ax1 + 1) # (1, 1, box_height) >= (N, box_depth, box_width, 1) --> (N, box_depth, box_width, box_height)
+            & (idxax2 >= idxax2_start_per_ax0)
+            & (idxax2 < idxax2_end_per_ax0 + 1)
+            & (idxax2 >= idxlw[:,2][:, None, None, None])
+            & (idxax2 < idxup[:,2][:, None, None, None])
+        )
+        mask = (
+            idxax0_mask & idxax1_mask & idxax2_mask
+        )
+        return mask
+
+
     @staticmethod
     def GaussConvLine3D(Q, X0, X1, Sigma, x, y, z):
         '''
@@ -330,7 +656,7 @@ class QModel():
         sx2 = sx**2 # (N,)
         sy2 = sy**2 # (N,)
         sz2 = sz**2 # (N,)
-        
+
         deltaSquare = (
             sysz2 * dx01**2
             + sxsy2 * dz01**2 + sxsz2 * dy01**2
@@ -344,13 +670,13 @@ class QModel():
         argA1 = (
             sysz2 * (x - x0)*dx01 + # (N,Nx,1,1)
             sxsy2 * (z - z0)*dz01 + # (N,1,1,Nz)
-            sxsz2 * (y - y0)*dy01   # (N,1,Ny,1)              
+            sxsz2 * (y - y0)*dy01   # (N,1,Ny,1)
         ) # (N, Nx, Ny, Nz)
 
         argA2 = (
             sysz2 * (x - x1) * dx01 + # (N,Nx,1,1)
             sxsy2 * (z - z1) * dz01 + # (N,1,1,Nz)
-            sxsz2 * (y - y1) * dy01 # (N,1,Ny,1) 
+            sxsz2 * (y - y1) * dy01 # (N,1,Ny,1)
         ) # (N, Nx, Ny, Nz)
 
         argB = (
@@ -358,7 +684,7 @@ class QModel():
             sx2 * torch.pow(y * dz01 + (z1*y0 - z0*y1) - z * dy01, 2) + # (N, 1, Ny, Nz)
             sz2 * torch.pow(y * dx01 + (x1*y0 - x0*y1) - x * dy01, 2) # (N, Nx, Ny, 1)
         ) # (N, Nx, Ny, Nz)
-        
+
         charge = (
             -Q* torch.exp(-0.5*argB/deltaSquare)/deltaSquareSqrt4pi * (
                 torch.erf(argA1/erfArgDenominator) -
@@ -368,25 +694,24 @@ class QModel():
         '''
         charge = (
             -Q * torch.exp(-0.5 * (
-                sy2 * torch.pow(x * dz01 + (z1*x0 - z0*x1) - z * dx01, 2) + 
-                sx2 * torch.pow(y * dz01 + (z1*y0 - z0*y1) - z * dy01, 2) + 
-                sz2 * torch.pow(y * dx01 + (x1*y0 - x0*y1) - x * dy01, 2) 
+                sy2 * torch.pow(x * dz01 + (z1*x0 - z0*x1) - z * dx01, 2) +
+                sx2 * torch.pow(y * dz01 + (z1*y0 - z0*y1) - z * dy01, 2) +
+                sz2 * torch.pow(y * dx01 + (x1*y0 - x0*y1) - x * dy01, 2)
                                 )/deltaSquare)/deltaSquareSqrt4pi * (
                 torch.erf((
                     sysz2 * (x - x0)*dx01 + # (N,Nx,1,1)
                     sxsy2 * (z - z0)*dz01 + # (N,1,1,Nz)
-                    sxsz2 * (y - y0)*dy01   # (N,1,Ny,1)              
-                        )/erfArgDenominator) - 
+                    sxsz2 * (y - y0)*dy01   # (N,1,Ny,1)
+                        )/erfArgDenominator) -
                 torch.erf((
-                    sysz2 * (x - x1) * dx01 + 
-                    sxsy2 * (z - z1) * dz01 + 
-                    sxsz2 * (y - y1) * dy01  
+                    sysz2 * (x - x1) * dx01 +
+                    sxsy2 * (z - z1) * dz01 +
+                    sxsz2 * (y - y1) * dy01
                         )/erfArgDenominator)
                 )
             )
 
         return charge
-
 
 class QEff3D():
     '''QEff'''
@@ -579,7 +904,7 @@ class QEff3D():
                         y[:, None, :, None, None, :, None], # (Nsteps, 1, M, 1, 1, J-1, 1)
                         z[:, None, None, :, None, None, :]) # (Nsteps, 1, 1, N, 1, 1, K-1)
         return charge
-        
+
     @staticmethod
     def eval_qmodel(Q, X0, X1, Sigma, x, y, z, **kwargs):
         '''
@@ -592,20 +917,37 @@ class QEff3D():
         qmodel = kwargs.get('qmodel', None)
         if qmodel is None:
             qmodel = QEff3D.eval_line_conv_gaus
+        mask = kwargs.get('mask', None)
+
         charge = qmodel(Q, X0, X1, Sigma, x[:, :, None, None, :, None, None], # (Nsteps, L, 1, 1, I-1, 1, 1)
                         y[:, None, :, None, None, :, None], # (Nsteps, 1, M, 1, 1, J-1, 1)
                         z[:, None, None, :, None, None, :]) # (Nsteps, 1, 1, N, 1, 1, K-1)
+
         return charge
 
     @staticmethod
     def eval_qeff(Q, X0, X1, Sigma, offset, shape, origin, grid_spacing, method, npoints, **kwargs):
         '''
         '''
+        device = X0.device
+
+        usemask = kwargs.get('usemask', False)
+        n_sigma = kwargs.get('n_sigma', False)
+        if usemask and not n_sigma:
+            raise ValueError('n_sigma must be given when using masks')
+
+        quaddim = kwargs.get('convdim', (0,1,2)) # not used yet; place holder for future extension
+
+        if quaddim:
+            usequad = True
+        else:
+            usequad = False
+
         u1ds = QEff3D.create_u1ds(method, npoints)
         w1ds = QEff3D.create_w1ds(method, npoints, grid_spacing)
         ublock = QEff3D.create_u_block(u1ds)
         wblock = QEff3D.create_weight_block(w1ds)
-        
+
         x, y, z = QEff3D.create_sampling_1ds(method, npoints, origin, grid_spacing, offset, shape)
 
         lmn = tuple(wblock.shape)
@@ -616,7 +958,21 @@ class QEff3D():
         kernel = torch.flip(kernel, [3, 4, 5]) # it does not matter we flip at first or we multiply w and u at first
         kernel = kernel.view(lmn_prod, 1, rst[0], rst[1], rst[2]) # out_channel, in_channel/groups, R, S, T
 
-        charge = QEff3D.eval_qmodel(Q, X0, X1, Sigma, x, y, z, **kwargs)
+        if usemask:
+            box_shape = make_tensor(shape, dtype=torch.int32, device=device)
+            box_offset = make_tensor(offset, dtype=torch.int64, device=device)
+            tilt_min = 2./box_shape.float()
+            tilt_max = box_shape.float()/2.
+            m = QModel.mask3D(X0, X1, Sigma, n_sigma, tilt_min, tilt_max, origin, grid_spacing, box_offset, box_shape, ax=(0,1,2))
+            L, M, N = npoints
+            # Expand the dimensions of the tensor to (1, 1, 1, I, J, K)
+            expanded_m = m.unsqueeze(0).unsqueeze(0).unsqueeze(0)
+
+            # Tile the tensor to repeat it along the new dimensions
+            repeated_m = m.repeat(L, M, N, 1, 1, 1)
+            charge = torch.where(repeated_m, QEff3D.eval_qmodel(Q, X0, X1, Sigma, x, y, z, **kwargs), 0)
+        else:
+            charge = QEff3D.eval_qmodel(Q, X0, X1, Sigma, x, y, z, **kwargs)
 
         qeff = charge.view(len(charge), lmn_prod, shape[0], shape[1], shape[2]) # batch, channel, D1, D2, D3
         qeff = torch.nn.functional.pad(qeff, pad=(rst[2]-1, rst[2]-1, rst[1]-1, rst[1]-1,
