@@ -7,12 +7,12 @@ import json
 
 def make_tensor(source, device, dtype=torch.float32):
     '''Aliasing or create a tensor if not existing.
-    New tensor will be moved to the device
+    Result tensor will be moved to the device
     '''
     if isinstance(source, torch.Tensor):
         t = source
+        t = t.to(device)
         t.requires_grad = False
-        t.to(device)
         if dtype != t.dtype:
             raise ValueError(f'Wrong dtype given. The dtype of source is {t.dtype}')
     else:
@@ -97,7 +97,8 @@ class UniversalGrid:
             origin = torch.tensor(origin, device=device,
                                   dtype=torch.float32, requires_grad=False)
         if not isinstance(spacing, torch.Tensor):
-            spacing = torch.tensor(spacing, dtype=torch.float32, requires_grad=False)
+            spacing = torch.tensor(spacing, device=device,
+                                   dtype=torch.float32, requires_grad=False)
         idxs = (coords - origin.unsqueeze(0)) / spacing.unsqueeze(0)
         idxs = idxs.floor().to(torch.int64)
         return idxs
@@ -309,10 +310,9 @@ class QModel():
         height : (N, )
         tilt : (N, )
         """
+        device = X0.device
         tilt = (X1[:,1]-X0[:,1])/(X1[:,0]-X0[:,0]) # (N,); inf can be in the result
-
-        if not isinstance(n_sigma, torch.Tensor):
-            n_sigma = torch.tensor(n_sigma, dtype=torch.float32, requires_grad=False)
+        n_sigma = make_tensor(n_sigma, device=device)
 
         mask = (torch.abs(tilt) < tilt_max) & (torch.abs(tilt) >= tilt_min)
         positive_mask = mask & (tilt >= 0)
@@ -366,21 +366,20 @@ class QModel():
         # tilt is height / width
         # width maps to x, axis 0
         # height maps to y, axis 1
+        device = X0.device
 
         ref, width, height, tilt = QModel.compute_shape_2D(X0, X1, Sigma, n_sigma, tilt_min, tilt_max)
         start_x, start_y = ref[:,0], ref[:,1]
 
 
         # historical swap...
-        cols = torch.arange(box_shape[0], dtype=torch.int32).unsqueeze(1) # (box_width, 1)
-        rows = torch.arange(box_shape[1], dtype=torch.int32).unsqueeze(0) # (1, box_height)
+        cols = torch.arange(box_shape[0], dtype=torch.int32, device=device).unsqueeze(1) # (box_width, 1)
+        rows = torch.arange(box_shape[1], dtype=torch.int32, device=device).unsqueeze(0) # (1, box_height)
 
         start = torch.stack([start_x, start_y], dim=1) # (N, 2)
-        local_startidx = UniversalGrid.compute_index(start, origin, grid_spacing) - box_offset # (N, 2)
+        local_startidx = UniversalGrid.compute_index(start, origin, grid_spacing, device=device) - box_offset # (N, 2)
 
         tilt_mask = (torch.abs(tilt) < tilt_max) & (torch.abs(tilt) >= tilt_min)
-        print('tilt_mask', tilt_mask.shape)
-        print('local_startidx[:,0]', local_startidx[:,0].shape)
         row_offsets_per_col = torch.where(
             tilt_mask[:, None, None],
             torch.clamp((cols.unsqueeze(0) - local_startidx[:,0][:, None, None]) * tilt[:, None, None] , min=0), # shape (N, box_width, 1)
@@ -404,18 +403,14 @@ class QModel():
         ax : tuple (3, )
         tilt : ax[1]/ax[0], ax[2]/ax[0], ax[2]/ax[1]
         '''
+        device = X0.device
         tilt = torch.stack(
             [ (X1[:,ax[j]]-X0[:,ax[j]])/(X1[:,ax[i]]-X0[:,ax[i]])
               for i, j in zip([0, 0, 1], [1, 2, 2])]
         ) # tilt[3] will be recomputed according to the shape; as projection must be larger than the original area
-        if not isinstance(n_sigma, torch.Tensor):
-            n_sigma = torch.tensor(n_sigma, dtype=torch.float32, requires_grad=False)
-        if not isinstance(tilt_min, torch.Tensor):
-            tilt_min = torch.tensor(tilt_min, dtype=torch.float32,
-                                    requires_grad=False)
-        if not isinstance(tilt_max, torch.Tensor):
-            tilt_max = torch.tensor(tilt_max, dtype=torch.float32,
-                                        requires_grad=False)
+        n_sigma = make_tensor(n_sigma, device=device)
+        tilt_min = make_tensor(tilt_min, device=device)
+        tilt_max = make_tensor(tilt_max, device=device)
         N_sigma = n_sigma[None,:] * Sigma
 
         condition = X0[:, ax[0]] < X1[:, ax[0]]  # Shape: (N,)
@@ -493,19 +488,11 @@ class QModel():
         tilt_max_ax02 = make_tensor(tilt_max[1], device=device)
         tilt_max_ax12 = make_tensor(tilt_max[2], device=device)
 
-        # tilt_min_ax01 = torch.tensor(tilt_min[0], dtype=torch.float32, requires_grad=False, device=X0.device)
-        # tilt_min_ax02 = torch.tensor(tilt_min[1], dtype=torch.float32, requires_grad=False, device=X0.device)
-        # tilt_min_ax12 = torch.tensor(tilt_min[2], dtype=torch.float32, requires_grad=False, device=X0.device)
-
-        # tilt_max_ax01 = torch.tensor(tilt_max[0], dtype=torch.float32, requires_grad=False, device=X0.device)
-        # tilt_max_ax02 = torch.tensor(tilt_max[1], dtype=torch.float32, requires_grad=False, device=X0.device)
-        # tilt_max_ax12 = torch.tensor(tilt_max[2], dtype=torch.float32, requires_grad=False, device=X0.device)
-
         ref_ax0, ref_ax12, depth_ax0, width_ax12, height_ax12, tilt_ax01, tilt_ax02, tilt_ax12 = QModel.compute_shape_3D(X0, X1, Sigma, n_sigma, ax, tilt_min, tilt_max)
         start = [ref_ax0, ref_ax12[:,0], ref_ax12[:,1]] # (N, 3)
         start = torch.stack([x for _, x in sorted(zip(ax, start))], dim=1)
 
-        local_array_startidx = UniversalGrid.compute_index(start, origin, grid_spacing) - box_offset # (N, 3) # array indices
+        local_array_startidx = UniversalGrid.compute_index(start, origin, grid_spacing, device=device) - box_offset # (N, 3) # array indices
 
         tilt_mask12 = ( # ax1/ax0, ax2/ax0
             (torch.abs(tilt_ax01) < tilt_max_ax01)  & (torch.abs(tilt_ax01) >= tilt_min_ax01)
@@ -557,7 +544,7 @@ class QModel():
         # TBD; another reference
         start_ax21 = [ref_ax0, ref_ax21[:,0], ref_ax21[:,1]] # (N, 3)
         start_ax21 = torch.stack([x for _, x in sorted(zip([ax[0], ax[2], ax[1]], start_ax21))], dim=1)
-        local_array_startidx_ax21 = UniversalGrid.compute_index(start_ax21, origin, grid_spacing) - box_offset # (N, 3) # array indices
+        local_array_startidx_ax21 = UniversalGrid.compute_index(start_ax21, origin, grid_spacing, device=device) - box_offset # (N, 3) # array indices
 
         idxax2_start_per_ax0 = local_array_startidx_ax21[:, ax[2]][:,None,None,None] + idxax2_offset_per_ax0
         idxax2_start_per_ax0 = idxax2_start_per_ax0.clamp(min=0, max=box_shape[ax[2]]-1) # (N, box_depth, 1, 1)
@@ -567,13 +554,12 @@ class QModel():
         idxax1 = idxax1.unsqueeze(0)
         idxax2 = idxax2.unsqueeze(0)
 
-        if not isinstance(n_sigma, torch.Tensor):
-            n_sigma = torch.tensor(n_sigma)
+        n_sigma = make_tensor(n_sigma, device=device)
 
         minX0X1 = torch.min(X0, X1) - n_sigma.unsqueeze(0) * Sigma
         maxX0X1 = torch.max(X0, X1) + n_sigma.unsqueeze(0) * Sigma
-        idxlw = UniversalGrid.compute_index(minX0X1, origin, grid_spacing) - box_offset
-        idxup = UniversalGrid.compute_index(maxX0X1, origin, grid_spacing) - box_offset + 1
+        idxlw = UniversalGrid.compute_index(minX0X1, origin, grid_spacing, device=device) - box_offset
+        idxup = UniversalGrid.compute_index(maxX0X1, origin, grid_spacing, device=device) - box_offset + 1
 
         idxax0_mask = (
             (idxax0 >= local_array_startidx[:,ax[0]][:, None, None, None]) # (N, box_depth, 1, 1)
@@ -716,7 +702,8 @@ class QModel():
 class QEff3D():
     '''QEff'''
     def __init__(self, origin, grid_spacing, offset, shape,
-                 method='gauss_legendre_4_4_4'
+                 method='gauss_legendre_4_4_4',
+                 device='cpu'
                  ):
         '''xspace, yspcae, tspace are tuples of three numbers
         defining the range and number of grid points along one dimension
@@ -731,11 +718,14 @@ class QEff3D():
         # )
 
         self._box_shape = shape
-        self._box_offset = offset if isinstance(offset, torch.Tensor) else torch.tensor(offset, dtype=torch.int64, requires_grad=False)
+        self._box_offset = offset if isinstance(offset, torch.Tensor) \
+            else torch.tensor(offset, dtype=torch.int64, requires_grad=False, device=device)
         self._origin = origin
         self._grid_spacing = grid_spacing
 
         self._method, self._npoints = QEff3D.parse_method(method)
+
+        self._device = device
 
     @property
     def origin(self):
@@ -769,18 +759,18 @@ class QEff3D():
             raise NotImplementedError(msg)
 
     @staticmethod
-    def create_w1d_GL(npt, spacing):
+    def create_w1d_GL(npt, spacing, device='cpu'):
         '''
         npt : integer
         spacing : float
         return a tensor of weights of n-point GL quadrature after correcting for length of intervals
         '''
         _, weights = sp.special.roots_legendre(npt)
-        w1d = torch.tensor(weights, dtype=torch.float32, requires_grad=False) * spacing/2
+        w1d = torch.tensor(weights, dtype=torch.float32, requires_grad=False, device=device) * spacing/2
         return w1d
 
     @staticmethod
-    def create_w1ds(method, npoints, grid_spacing):
+    def create_w1ds(method, npoints, grid_spacing, device='cpu'):
         '''
         method : str
         npoints : (3, ), integers
@@ -791,7 +781,7 @@ class QEff3D():
             raise NotImplementedError('Not implemented method but gauss legendre quadrature')
         w1ds = [None, None, None]
         for ipt, npt in enumerate(npoints):
-            w1ds[ipt] = QEff3D.create_w1d_GL(npt, grid_spacing[ipt])
+            w1ds[ipt] = QEff3D.create_w1d_GL(npt, grid_spacing[ipt], device)
         return w1ds
 
     @staticmethod
@@ -801,21 +791,21 @@ class QEff3D():
         return w3d
 
     @staticmethod
-    def create_u1d_GL(npt):
+    def create_u1d_GL(npt, device='cpu'):
         '''
         npt : integer
         return: a tensor of coefficients for interpolations at roots of npt-order GL polynomials
         '''
         roots, _ = sp.special.roots_legendre(npt)
-        roots = torch.tensor(roots, dtype=torch.float32, requires_grad=False)
+        roots = torch.tensor(roots, dtype=torch.float32, requires_grad=False, device=device)
         u = (roots+1)/2
-        u1d = torch.empty([npt, 2], dtype=torch.float32, requires_grad=False)
+        u1d = torch.empty([npt, 2], dtype=torch.float32, requires_grad=False, device=device)
         u1d[:, 0] = 1-u
         u1d[:, 1] = u
         return u1d
 
     @staticmethod
-    def create_u1ds(method, npoints):
+    def create_u1ds(method, npoints, device='cpu'):
         '''
         method : str
         npoints : (3, ) integers
@@ -823,7 +813,7 @@ class QEff3D():
         '''
         u1ds = []
         for ipt, npt in enumerate(npoints):
-            u1ds.append(QEff3D.create_u1d_GL(npt))
+            u1ds.append(QEff3D.create_u1d_GL(npt, device))
         return u1ds
 
     @staticmethod
@@ -851,7 +841,7 @@ class QEff3D():
         return w3d[:,:,:,None,None,None] * u3d
 
     @staticmethod
-    def create_sampling_1d_GL(origin_1d, grid_spacing_1d, offset_1d, shp_1d, npt):
+    def create_sampling_1d_GL(origin_1d, grid_spacing_1d, offset_1d, shp_1d, npt, device='cpu'):
         '''
         origin_1d : float
         grid_spacing_1d : float
@@ -860,18 +850,18 @@ class QEff3D():
         npt : npoints GL quad rule
         return: samplings (Nsteps, L/M/N, I/J/K-1).
         '''
-        shp_idx_1d = torch.arange(shp_1d+1, dtype=torch.float32, requires_grad=False) # (I/J/K, )
+        shp_idx_1d = torch.arange(shp_1d+1, dtype=torch.float32, requires_grad=False, device=device) # (I/J/K, )
         idx_2d = offset_1d[:,None] + shp_idx_1d[None, :]
         corners_1d = origin_1d + idx_2d * grid_spacing_1d # (Nsteps, I/J/K)
         roots, _ = sp.special.roots_legendre(npt) # (L/M/N, )
-        roots = torch.tensor(roots, dtype=torch.float32, requires_grad=False)
+        roots = torch.tensor(roots, dtype=torch.float32, requires_grad=False, device=device)
         half_delta = (corners_1d[:, 1:] - corners_1d[:, :-1])/2. # (Nsteps, I/J/K-1)
         avg = (corners_1d[:,1:] + corners_1d[:,:-1])/2. # (Nsteps, I/J/K)
         sampling_1d = half_delta[:, None, :] * roots[None, :, None] + avg[:, None, :] # (Nsteps, L/M/N, I/J/K-1)
         return sampling_1d
 
     @staticmethod
-    def create_sampling_1ds(method, npoints, origin, grid_spacing, offset, shape):
+    def create_sampling_1ds(method, npoints, origin, grid_spacing, offset, shape, device='cpu'):
         '''
         method : str
         origin : tuple of three floats
@@ -886,7 +876,7 @@ class QEff3D():
             raise NotImplementedError('Not implemented method but gauss legendre quadrature')
         for i in range(3):
             sampling_1ds.append(QEff3D.create_sampling_1d_GL(origin[i], grid_spacing[i],
-                                                             offset[:,i], shape[i], npoints[i]))
+                                                             offset[:,i], shape[i], npoints[i], device))
         return sampling_1ds
 
     @staticmethod
@@ -929,7 +919,9 @@ class QEff3D():
     def eval_qeff(Q, X0, X1, Sigma, offset, shape, origin, grid_spacing, method, npoints, **kwargs):
         '''
         '''
-        device = X0.device
+        device = kwargs.get('device', 'cpu')
+        if isinstance(X0, torch.Tensor):
+            assert X0.device == torch.device(device)
 
         usemask = kwargs.get('usemask', False)
         n_sigma = kwargs.get('n_sigma', False)
@@ -943,15 +935,15 @@ class QEff3D():
         else:
             usequad = False
 
-        u1ds = QEff3D.create_u1ds(method, npoints)
-        w1ds = QEff3D.create_w1ds(method, npoints, grid_spacing)
+        u1ds = QEff3D.create_u1ds(method, npoints, device)
+        w1ds = QEff3D.create_w1ds(method, npoints, grid_spacing, device)
         ublock = QEff3D.create_u_block(u1ds)
         wblock = QEff3D.create_weight_block(w1ds)
 
-        x, y, z = QEff3D.create_sampling_1ds(method, npoints, origin, grid_spacing, offset, shape)
+        x, y, z = QEff3D.create_sampling_1ds(method, npoints, origin, grid_spacing, offset, shape, device)
 
         lmn = tuple(wblock.shape)
-        lmn_prod = torch.prod(torch.tensor(lmn, dtype=torch.int64), 0)
+        lmn_prod = np.prod(lmn, dtype=int)
         rst = ublock.shape[3:]
 
         kernel = QEff3D.create_wu_block(wblock, ublock)
@@ -988,14 +980,13 @@ class QEff3D():
     def _create_w1ds(self):
         '''1D weights with the size (L, M, N) for x, y, z
         '''
-        return QEff3D.create_w1ds(self._method, self._npoints, self._grid_spacing)
+        return QEff3D.create_w1ds(self._method, self._npoints, self._grid_spacing, self._device)
 
     def _create_u1ds(self):
         '''1D weights for trilinear interpolation
             with the size (L, M, N, 2, 2, 2) for x, y, z
         '''
-        return QEff3D.create_u1ds(self._method, self._npoints)
-
+        return QEff3D.create_u1ds(self._method, self._npoints, self._device)
 
     def _create_sampling_1d(self):
         '''create grid in 1d with a size of (L, I), (M, ).
@@ -1003,7 +994,7 @@ class QEff3D():
         1. A uniform spacing of cubes is assumed.
         2. (b-a)/2 of each interval is included in the weight
         '''
-        sampling_1ds = QEff3D.create_sampling_1ds(self._method, self._origin, self._grid_spacing, self._box_offset, self._box_shape, self._npoints)
+        sampling_1ds = QEff3D.create_sampling_1ds(self._method, self._origin, self._grid_spacing, self._box_offset, self._box_shape, self._npoints, self._device)
         return sampling_1ds
 
     def create_qeff_noweight(self, Q, X0, X1, Sigma, x, y, z):
@@ -1020,5 +1011,6 @@ class QEff3D():
         '''create Qeff multiplied by weights; output is squeezed'''
         qeff = QEff3D.eval_qeff(Q, X0, X1, Sigma, self._box_offset, self._box_shape,
                                 self._origin, self._grid_spacing, self._method, self._npoints,
+                                device=self._device,
                                 **kwargs)
         return qeff

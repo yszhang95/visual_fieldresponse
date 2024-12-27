@@ -3,7 +3,6 @@ import scipy as sp
 import json
 
 import torch
-from torch.profiler import profile, record_function, ProfilerActivity
 
 from toy_gpu3 import UniversalGrid, LocalGrid, QModel, QEff3D
 
@@ -262,6 +261,7 @@ def test_localgrid(origin=(-1,-1,-1), grid_spacing=(1,1,1),n_sigma=(5,3,1)):
     X0 = torch.tensor([[1.0, 1.0, 1.0], [6, 2.0, 2.0]], dtype=torch.float32)  # Starting points
     X1 = torch.tensor([[3.0, 3.0, 3.0], [5.0, 5.0, 5.0]], dtype=torch.float32)  # Ending points
     Sigma = torch.tensor([[0.5, 0.5, 0.5], [0.2, 0.2, 0.2]], dtype=torch.float32)  # Diffusion widths
+    n_sigma = torch.tensor(n_sigma, dtype=torch.float32)
     print('Input X0 {}\nX1 {}\nSigma {}'.format(X0, X1, Sigma))
 
     # Compute charge box
@@ -269,14 +269,14 @@ def test_localgrid(origin=(-1,-1,-1), grid_spacing=(1,1,1),n_sigma=(5,3,1)):
     print('from get_charge_box')
     print("Offsets:", result[0])
     print("Shapes:", result[1])
-    result = LocalGrid.compute_charge_box(X0, X1, Sigma, torch.tensor(n_sigma), origin, grid_spacing)
+    result = LocalGrid.compute_charge_box(X0, X1, Sigma,n_sigma, origin, grid_spacing)
     print('from compute_charge_box')
     print('Offsets:', result[0])
     print('Shapes:', result[1])
     print("Bounds of with origin {}, spacing {}, n_sigma {}".format(origin, grid_spacing, n_sigma), local_grid.compute_bounds(X0, X1, Sigma))
     print("Bounds of with origin {}, spacing {}, n_sigma {}, from static,".format(origin, grid_spacing, n_sigma), LocalGrid.compute_bounds_X0_X1(X0, X1, Sigma, torch.tensor(n_sigma)))
     print('Stack of X0, X1', LocalGrid.stack_X0X1(X0, X1))
-    print("Bounds of with origin {}, spacing {}, n_sigma {}, after stacking and static,".format(origin, grid_spacing, n_sigma), LocalGrid.compute_bounds_X0X1(LocalGrid.stack_X0X1(X0, X1), Sigma, torch.tensor(n_sigma)))
+    print("Bounds of with origin {}, spacing {}, n_sigma {}, after stacking and static,".format(origin, grid_spacing, n_sigma), LocalGrid.compute_bounds_X0X1(LocalGrid.stack_X0X1(X0, X1), Sigma, n_sigma))
 
 def print_grid(grid):
 
@@ -317,9 +317,10 @@ def test_grid():
 
 
 def test_cond_QEff():
+    device = 'cuda:0'
     qeff = QEff3D(
         origin=(0,0,0), grid_spacing=(0.1, 0.1, 0.1), offset=[(0,20,30)], shape=(10, 10, 10),
-        method='gauss_legendre_4_4_4')
+        method='gauss_legendre_4_4_4', device=device)
 
     # Asserted
     print('\nTesting line conv gaus model in QEff3D-------------')
@@ -328,9 +329,10 @@ def test_cond_QEff():
     X1=[(0.6, 2.6, 3.6)]
     Sigma=[(0.5, 0.5, 0.5)]
     print(f'Setup, Q={Q}, X0={X0}, X1={X1}, Sigma={Sigma}, Origin={qeff.origin}, GridSpacing={qeff.grid_spacing}, Offset={qeff.box_offset}, Shape={qeff.box_shape}')
-    X0 = torch.tensor(X0, device='cpu')
-    X1 = torch.tensor(X1, device='cpu')
-    Sigma = torch.tensor(Sigma, device='cpu')
+    Q = torch.tensor(Q, device=device)
+    X0 = torch.tensor(X0, device=device)
+    X1 = torch.tensor(X1, device=device)
+    Sigma = torch.tensor(Sigma, device=device)
     effq = qeff.create_qeff(Q=Q, X0=X0, X1=X1,
                              Sigma=Sigma, qmodel=QModel.GaussConvLine3D,
                              usemask=True, n_sigma=(3.5, 3.5, 3.5))
@@ -343,11 +345,8 @@ def test_cond_QEff():
     print('Pass assertion for GausConvLine')
 
 if __name__ == '__main__':
-    with profile(activities=[ProfilerActivity.CUDA],
-                 record_shapes=True, profile_memory=True) as prof:
-        with record_function("test"):
-            pass
-        # print(prof.key_averages().table(sort_by="cpu_time_total", row_limit=10))
-
+    test_QModel()
+    test_localgrid()
+    test_grid()
+    test_QEff()
     test_cond_QEff()
-    print(prof.key_averages().table())
