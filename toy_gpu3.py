@@ -935,12 +935,30 @@ class QEff3D():
         return charge
 
     @staticmethod
+    def eval_mask(Q, X0, X1, Sigma, offset, shape, origin, grid_spacing, n_sigma):
+        '''
+        '''
+        if not isinstance(X0, torch.Tensor):
+            raise ValueError('X0 must be a torch.Tensor')
+        device = X0.device
+
+        box_shape = make_tensor(shape, dtype=torch.int32, device=device)
+        box_offset = make_tensor(offset, dtype=torch.int64, device=device)
+        tilt_min = 2./box_shape.float()
+        tilt_max = box_shape.float()/2.
+        m = QModel.mask3D(X0, X1, Sigma, n_sigma, tilt_min, tilt_max, origin, grid_spacing, box_offset, box_shape, ax=(0,1,2)) # (N, I, J, K)
+        # Expand the dimensions of the tensor to (1, 1, 1, I, J, K)
+        expanded_m = m.unsqueeze(1).unsqueeze(1).unsqueeze(1)
+
+        return expanded_m
+
+    @staticmethod
     def eval_qeff(Q, X0, X1, Sigma, offset, shape, origin, grid_spacing, method, npoints, **kwargs):
         '''
         '''
-        device = kwargs.get('device', 'cpu')
-        if isinstance(X0, torch.Tensor):
-            assert X0.device == torch.device(device)
+        if not isinstance(X0, torch.Tensor):
+            raise ValueError('X0 must be a torch.Tensor')
+        device = X0.device
 
         usemask = kwargs.get('usemask', False)
         n_sigma = kwargs.get('n_sigma', False)

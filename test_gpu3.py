@@ -202,7 +202,8 @@ def test_QEff():
 
         return output
     # qmodel = lambda Q, X0, X1, Sigma, x, y, t :
-    effq = qeff.create_qeff(None, None, None, None, qmodel=mymodel)
+    dummy = torch.tensor([1], device='cpu')
+    effq = qeff.create_qeff(None, dummy, None, None, qmodel=mymodel)
     print('effective charge calculation, shape', effq.shape, 'total Q', torch.sum(effq))
     assert abs(torch.sum(effq).item() - 177.7344)/177.7344 < 1E-4
     print('Pass assertion for x^3 * y^3 * t^3')
@@ -224,6 +225,7 @@ def test_QEff():
     X1=[(0.6, 2.6, 3.6)]
     Sigma=[(0.5, 0.5, 0.5)]
     print(f'Setup, Q={Q}, X0={X0}, X1={X1}, Sigma={Sigma}, Origin={qeff.origin}, GridSpacing={qeff.grid_spacing}, Offset={qeff.box_offset}, Shape={qeff.box_shape}')
+    X0 = torch.tensor(X0)
     effq2 = qeff.create_qeff(Q=Q, X0=X0, X1=X1,
                              Sigma=Sigma, qmodel=QModel.GaussConvLine3D)
     print('Sum of Line conv Gaus', torch.sum(effq2))
