@@ -240,6 +240,7 @@ class LocalGrid:
             offset = min_limit
             shape = max_limit - min_limit + 1
             shape = LocalGrid.reduce_to_universal(shape)
+            shape = shape.to(torch.int32)
         elif compare_key == 'coordinate':
             raise NotImplementedError('Not support comparation by coordinate')
             '''
@@ -640,11 +641,13 @@ class QModel():
         if len(z) != len(X0):
             raise ValueError('Incompatible shapes between x and X0,X1,Sigma')
 
-        x0, y0, z0 = X0[:,0], X0[:,1], X0[:,2] # (N,) (N,), (N,)
-        x1, y1, z1 = X1[:,0], X1[:,1], X1[:,2] # (N,) (N,), (N,)
-        sx, sy, sz = Sigma[:,0], Sigma[:,1], Sigma[:,2] # (N,) (N,), (N,)
+        # prepare for brodcasting
+        num_dims_to_add = x.ndimension() - 1
+        shape_new = (x.shape[0],) + (1,)* num_dims_to_add
 
-        # brodcasting following
+        x0, y0, z0 = [X0[:,i].view(shape_new) for i in range(3)]
+        x1, y1, z1 = [X1[:,i].view(shape_new) for i in range(3)]
+        sx, sy, sz = [Sigma[:,i].view(shape_new) for i in range(3)]
 
         dx01 = x0 - x1 # (N,)
         dy01 = y0 - y1 # (N,)
@@ -664,8 +667,9 @@ class QModel():
 
         deltaSquareSqrt = torch.sqrt(deltaSquare) # (N,)
 
-        deltaSquareSqrt4pi = deltaSquareSqrt * 4 * np.pi # (N,)
+        QoverDeltaSquareSqrt4pi = Q.view(shape_new) / deltaSquareSqrt / 4 / np.pi # (N,)
         erfArgDenominator = sqrt2 * deltaSquareSqrt * sx * sy * sz # (N,)
+
         '''
         argA1 = (
             sysz2 * (x - x0)*dx01 + # (N,Nx,1,1)
@@ -693,11 +697,11 @@ class QModel():
         )
         '''
         charge = (
-            -Q * torch.exp(-0.5 * (
+            -QoverDeltaSquareSqrt4pi * torch.exp(-0.5 * (
                 sy2 * torch.pow(x * dz01 + (z1*x0 - z0*x1) - z * dx01, 2) +
                 sx2 * torch.pow(y * dz01 + (z1*y0 - z0*y1) - z * dy01, 2) +
                 sz2 * torch.pow(y * dx01 + (x1*y0 - x0*y1) - x * dy01, 2)
-                                )/deltaSquare)/deltaSquareSqrt4pi * (
+                                )/deltaSquare) * (
                 torch.erf((
                     sysz2 * (x - x0)*dx01 + # (N,Nx,1,1)
                     sxsy2 * (z - z0)*dz01 + # (N,1,1,Nz)
@@ -902,7 +906,7 @@ class QEff3D():
         Sigma (Nsteps, 3)
         x, y, z are in a shape of (Nsteps, L/M/N, I/J/K-1)
         '''
-        charge = QModel.GausConvLine(
+        charge = QModel.GaussConvLine3D(
             Q, X0, X1, Sigma,
             x[:, :, None, None, :, None, None], # (Nsteps, L, 1, 1, I-1, 1, 1)
                         y[:, None, :, None, None, :, None], # (Nsteps, 1, M, 1, 1, J-1, 1)
@@ -920,7 +924,7 @@ class QEff3D():
         '''
         qmodel = kwargs.get('qmodel', None)
         if qmodel is None:
-            qmodel = QEff3D.eval_line_conv_gaus
+            qmodel = QModel.GaussConvLine3D
         mask = kwargs.get('mask', None)
 
         charge = qmodel(Q, X0, X1, Sigma, x[:, :, None, None, :, None, None], # (Nsteps, L, 1, 1, I-1, 1, 1)
