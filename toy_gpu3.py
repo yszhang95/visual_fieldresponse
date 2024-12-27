@@ -61,6 +61,10 @@ class UniversalGrid:
     def grid_spacing(self):
         return self._grid_spacing
 
+    @property
+    def device(self):
+        return self._device
+
     @staticmethod
     def compute_coordinate(idxs, spacing, origin, device='cpu'):
         '''
@@ -73,9 +77,6 @@ class UniversalGrid:
         if len(idxs.shape) == 1:
             idxs = idxs.unsqueeze(0)
         origin = make_tensor(origin, device=device, dtype=torch.float32)
-        if not isinstance(spacing, torch.Tensor):
-            spacing = torch.tensor(spacing, device=device,
-                                   dtype=torch.float32, requires_grad=False)
         spacing = make_tensor(spacing, device=device, dtype=torch.float32)
         return origin.unsqueeze(0) + idxs * spacing.unsqueeze(0)
 
@@ -147,14 +148,13 @@ class UniversalGrid:
         return UniversalGrid().from_grid(self._grid_spacing * multiples, self._origin)
 
 
-
 class LocalGrid:
     """
     A class for building a local grid to compute offsets to origin in terms of index,
     and shapes in unit of number of grid spacing, for a series of steps.
     """
 
-    def __init__(self, origin, grid_spacing, n_sigma):
+    def __init__(self, origin, grid_spacing, n_sigma, device='cpu'):
         """
         Initialize the grid.
 
@@ -163,9 +163,13 @@ class LocalGrid:
             grid_spacing (vdim,) (float): Spacing for grid in each dimension.
             n_sigma (vdim,), (int): Number of sigmas to include in bounds.
         """
-        self._grid_spacing = grid_spacing.copy(requires_grad=False) if isinstance(grid_spacing, torch.Tensor) else torch.tensor(grid_spacing, dtype=torch.float32, requires_grad=False)
-        self._origin = origin.copy(requires_grad=False) if isinstance(origin, torch.Tensor) else torch.tensor(origin, dtype=torch.float32, requires_grad=False)
-        self._n_sigma = n_sigma.copy(requires_grad=False) if isinstance(n_sigma, torch.Tensor) else torch.tensor(n_sigma, dtype=torch.float32, requires_grad=False)
+        self._origin = make_tensor(origin, device=device)
+        self._origin = self._origin.clone().detach()
+        self._grid_spacing = make_tensor(grid_spacing, device=device)
+        self._grid_spacing = self._grid_spacing.clone().detach()
+        self._n_sigma = make_tensor(n_sigma, device=device)
+        self._n_sigma = self._n_sigma.clone().detach()
+        self._device = device
 
     @staticmethod
     def compute_bounds_X0X1(X0X1, Sigma, n_sigma):
@@ -224,12 +228,15 @@ class LocalGrid:
         offset : (N, vdim)
         shape : (vdim,)
         '''
+        if not isinstance(X0, torch.Tensor):
+            raise ValueError('X0 must be a torch.Tensor')
+        device = X0.device
         extremes = LocalGrid.compute_bounds_X0_X1(X0, X1, Sigma, n_sigma) # (N, vdim, 2)
         min_limit = extremes[:, :, 0] # (N, vdim)
         max_limit = extremes[:, :, 1] # (N, vdim)
         if compare_key == 'index':
-            min_limit = UniversalGrid.compute_index(min_limit, origin, grid_spacing)
-            max_limit = UniversalGrid.compute_index(max_limit, origin, grid_spacing)
+            min_limit = UniversalGrid.compute_index(min_limit, origin, grid_spacing, device=device)
+            max_limit = UniversalGrid.compute_index(max_limit, origin, grid_spacing, device=device)
             offset = min_limit
             shape = max_limit - min_limit + 1
             shape = LocalGrid.reduce_to_universal(shape)
@@ -245,7 +252,6 @@ class LocalGrid:
         else:
             raise NotImplementedError('Only support comparation by index and coordinate')
         return offset, shape
-
 
     def compute_bounds(self, X0, X1, Sigma):
         """
@@ -274,7 +280,7 @@ class LocalGrid:
         Returns:
             torch.Tensor: Grid indices (N, vdim).
         """
-        return UniversalGrid.compute_index(coords, self._origin, self._grid_spacing)
+        return UniversalGrid.compute_index(coords, self._origin, self._grid_spacing, self._device)
 
     def get_charge_box(self, X0, X1, Sigma, compare_key='index'):
         """
@@ -310,6 +316,8 @@ class QModel():
         height : (N, )
         tilt : (N, )
         """
+        if not isinstance(X0, torch.Tensor):
+            raise ValueError('X0 must be a torch.Tensor')
         device = X0.device
         tilt = (X1[:,1]-X0[:,1])/(X1[:,0]-X0[:,0]) # (N,); inf can be in the result
         n_sigma = make_tensor(n_sigma, device=device)
@@ -366,11 +374,12 @@ class QModel():
         # tilt is height / width
         # width maps to x, axis 0
         # height maps to y, axis 1
+        if not isinstance(X0, torch.Tensor):
+            raise ValueError('X0 must be a torch')
         device = X0.device
 
         ref, width, height, tilt = QModel.compute_shape_2D(X0, X1, Sigma, n_sigma, tilt_min, tilt_max)
         start_x, start_y = ref[:,0], ref[:,1]
-
 
         # historical swap...
         cols = torch.arange(box_shape[0], dtype=torch.int32, device=device).unsqueeze(1) # (box_width, 1)
@@ -403,6 +412,9 @@ class QModel():
         ax : tuple (3, )
         tilt : ax[1]/ax[0], ax[2]/ax[0], ax[2]/ax[1]
         '''
+        if not isinstance(X0, torch.Tensor):
+            raise ValueError('X0 must be a torch')
+
         device = X0.device
         tilt = torch.stack(
             [ (X1[:,ax[j]]-X0[:,ax[j]])/(X1[:,ax[i]]-X0[:,ax[i]])
@@ -450,7 +462,6 @@ class QModel():
         # further dealing with degeneracy for tilt_ax00, tilt_ax01 necessary
         # missing tilt ax 12 degenerated?
 
-
         return ref_ax0, ref_ax12, depth_ax0, width_ax12, height_ax12, tilt_ax01, tilt_ax02, tilt_ax12
 
     @staticmethod
@@ -468,6 +479,9 @@ class QModel():
 
         kwargs['ax'] = (0, 1, 2) or others
         '''
+        if not isinstance(X0, torch.Tensor):
+            raise ValueError('X0 must be a torch')
+
         device = X0.device
         # tilt is height / width
         # width maps to x, axis 0
@@ -530,9 +544,9 @@ class QModel():
         (_, ref_ax21, _,
          width_ax21, height_ax21, _, _,
          _) = QModel.compute_shape_3D(X0, X1, Sigma, n_sigma,
-                               (ax[0], ax[2], ax[1]),
-                               (tilt_min[0], tilt_min[2], tilt_min[1]),
-                               (tilt_max[0], tilt_max[2], tilt_max[1]))
+                                      (ax[0], ax[2], ax[1]),
+                                      (tilt_min[0], tilt_min[2], tilt_min[1]),
+                                      (tilt_max[0], tilt_max[2], tilt_max[1]))
 
         idxax2_offset_per_ax0 = torch.where(
             tilt_mask12[:, None, None, None],
