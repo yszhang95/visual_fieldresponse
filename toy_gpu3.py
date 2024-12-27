@@ -340,8 +340,9 @@ class QModel():
             dy + 2 * nsy,
             maxX0X1[:,1] - minX0X1[:,1] + 2 * nsy
         )
+
         ref = torch.where(
-            positive_mask,
+            positive_mask[:,None],
             minX0X1 - N_sigma - torch.stack([torch.zeros_like(dy), dy], dim=1),
             torch.stack(
                 [minX0X1[:,0] - nsx,
@@ -973,14 +974,15 @@ class QEff3D():
             box_offset = make_tensor(offset, dtype=torch.int64, device=device)
             tilt_min = 2./box_shape.float()
             tilt_max = box_shape.float()/2.
-            m = QModel.mask3D(X0, X1, Sigma, n_sigma, tilt_min, tilt_max, origin, grid_spacing, box_offset, box_shape, ax=(0,1,2))
+            m = QModel.mask3D(X0, X1, Sigma, n_sigma, tilt_min, tilt_max, origin, grid_spacing, box_offset, box_shape, ax=(0,1,2)) # (N, I, J, K)
             L, M, N = npoints
             # Expand the dimensions of the tensor to (1, 1, 1, I, J, K)
-            expanded_m = m.unsqueeze(0).unsqueeze(0).unsqueeze(0)
+            expanded_m = m.unsqueeze(1).unsqueeze(1).unsqueeze(1)
 
             # Tile the tensor to repeat it along the new dimensions
-            repeated_m = m.repeat(L, M, N, 1, 1, 1)
-            charge = torch.where(repeated_m, QEff3D.eval_qmodel(Q, X0, X1, Sigma, x, y, z, **kwargs), 0)
+            # repeated_m = m.repeat(L, M, N, 1, 1, 1)
+            # charge = torch.where(repeated_m, QEff3D.eval_qmodel(Q, X0, X1, Sigma, x, y, z, **kwargs), 0)
+            charge = torch.where(expanded_m, QEff3D.eval_qmodel(Q, X0, X1, Sigma, x, y, z, **kwargs), 0)
         else:
             charge = QEff3D.eval_qmodel(Q, X0, X1, Sigma, x, y, z, **kwargs)
 
